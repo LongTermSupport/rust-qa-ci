@@ -239,8 +239,8 @@ A tool whose own configuration is absent (no dylint metadata, no `deny.toml`; fo
 Pin an exact tag. Install the binary and the pinned external tools:
 
 ```bash
-cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.3.0 rust-qa
-git clone --depth 1 --branch v0.3.0 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
+cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.3.1 rust-qa
+git clone --depth 1 --branch v0.3.1 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
 /tmp/rust-qa-ci/scripts/install-tools.sh            # versions from tools.lock
 ```
 
@@ -249,7 +249,7 @@ Bundled type-aware rules load from the same tag:
 ```toml
 [workspace.metadata.dylint]
 libraries = [
-    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.3.0", pattern = "lints/rqaci_lints" },
+    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.3.1", pattern = "lints/rqaci_lints" },
 ]
 ```
 
