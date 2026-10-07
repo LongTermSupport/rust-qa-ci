@@ -177,12 +177,57 @@ fn mutants_follow_the_configured_mode() {
     );
 }
 
+fn ast_grep_context(config: Config, sgconfig: bool) -> (tempfile::TempDir, Context) {
+    let dir = tempfile::tempdir().unwrap();
+    if sgconfig {
+        std::fs::write(dir.path().join("sgconfig.yml"), "ruleDirs: []\n").unwrap();
+    }
+    let mut ctx = context(config);
+    ctx.root = dir.path().to_path_buf();
+    (dir, ctx)
+}
+
 #[test]
-fn ast_grep_scans_the_scope_or_the_whole_tree() {
-    let mut ctx = context(Config::default());
-    assert_eq!(line(Tool::AstGrep, &ctx), vec!["ast-grep scan"]);
+fn ast_grep_runs_project_rules_then_the_bundled_pack_over_the_scope_or_the_whole_tree() {
+    let (_dir, mut ctx) = ast_grep_context(Config::default(), true);
+    assert_eq!(
+        line(Tool::AstGrep, &ctx),
+        vec![
+            "ast-grep scan",
+            "ast-grep scan --rule target/rust-qa/ast-grep/rqaci-pack.yml"
+        ]
+    );
     ctx.scope = vec![PathBuf::from("src/lib.rs")];
-    assert_eq!(line(Tool::AstGrep, &ctx), vec!["ast-grep scan src/lib.rs"]);
+    assert_eq!(
+        line(Tool::AstGrep, &ctx),
+        vec![
+            "ast-grep scan src/lib.rs",
+            "ast-grep scan --rule target/rust-qa/ast-grep/rqaci-pack.yml src/lib.rs"
+        ]
+    );
+}
+
+#[test]
+fn ast_grep_bundled_pack_runs_without_a_project_sgconfig_and_honours_scan_exclude() {
+    let config = Config {
+        scan_exclude: vec!["fixtures/**".to_owned()],
+        ..Config::default()
+    };
+    let (_dir, ctx) = ast_grep_context(config, false);
+    assert_eq!(
+        line(Tool::AstGrep, &ctx),
+        vec!["ast-grep scan --rule target/rust-qa/ast-grep/rqaci-pack.yml --globs !fixtures/**"]
+    );
+}
+
+#[test]
+fn ast_grep_bundled_pack_switched_off_leaves_only_project_rules() {
+    let mut config = Config::default();
+    config.ast_grep.bundled = false;
+    let (_dir, ctx) = ast_grep_context(config.clone(), true);
+    assert_eq!(line(Tool::AstGrep, &ctx), vec!["ast-grep scan"]);
+    let (_dir, ctx) = ast_grep_context(config, false);
+    assert_eq!(line(Tool::AstGrep, &ctx), Vec::<String>::new());
 }
 
 #[test]

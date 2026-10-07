@@ -1,5 +1,6 @@
 //! Active defence enumeration, derived from the configuration in force (Cargo `[lints]` tables,
-//! dylint libraries, ast-grep rule directories, `qa/rust-qa.toml`), never from a hand-kept list.
+//! dylint libraries, ast-grep rule directories and the bundled ast-grep pack, `qa/rust-qa.toml`),
+//! never from a hand-kept list.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,7 +9,7 @@ use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::config::{Config, MutantsMode};
 use crate::manifest::{Level, has_dylint_metadata, lint_settings, workspace_files};
-use crate::{Error, builtin, read_to_string};
+use crate::{Error, ast_grep, builtin, read_to_string};
 
 /// What enforces a defence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -157,6 +158,16 @@ pub fn enumerate(
                     &rule.file.display().to_string(),
                 );
             }
+        }
+    }
+    if tools.ast_grep && config.ast_grep.bundled {
+        for id in ast_grep::bundled_ids() {
+            out.push(
+                id,
+                Engine::AstGrep,
+                "error",
+                "rust-qa bundled ast-grep pack",
+            );
         }
     }
     runners(root, config, &mut out);

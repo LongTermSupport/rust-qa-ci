@@ -4,6 +4,7 @@
 //! any runner starts. The crate also lists active defences, resolves rule identifiers to offline
 //! documentation, validates the project record of exceptions and forbids unrecorded suppressions.
 
+pub mod ast_grep;
 pub mod builtin;
 pub mod config;
 pub mod defences;

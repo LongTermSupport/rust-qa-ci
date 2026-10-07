@@ -129,6 +129,71 @@ fn docs_detector_blocks_the_gate_on_a_dangling_identifier() {
 }
 
 #[test]
+fn bundled_ast_grep_rules_are_listed_and_documented() {
+    let dir = fixture();
+    let text = stdout(&rust_qa(dir.path(), &["rules"]));
+    assert!(text.contains("rqaci.ast.shell-c-command"), "{text}");
+    for id in [
+        "rqaci.ast.hardcoded-temp-path",
+        "ast-grep::rqaci.ast.hardcoded-temp-path",
+    ] {
+        let output = rust_qa(dir.path(), &["rule-doc", id]);
+        assert!(output.status.success(), "{id}");
+        assert!(stdout(&output).starts_with("# rqaci.ast.hardcoded-temp-path\n"));
+    }
+}
+
+/// A file violating a bundled rule, plus a project rule matching the same file.
+fn ast_grep_fixture() -> tempfile::TempDir {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "src/scratch.rs",
+        "pub fn scratch() -> std::path::PathBuf {\n    std::path::PathBuf::from(\"/tmp/scratch\")\n}\n",
+    );
+    write(dir.path(), "sgconfig.yml", "ruleDirs:\n  - rules\n");
+    write(
+        dir.path(),
+        "rules/r.yml",
+        "id: no-scratch\nlanguage: rust\nseverity: error\nmessage: no scratch\nrule:\n  pattern: pub fn scratch() -> $T { $$$ }\n",
+    );
+    dir
+}
+
+#[test]
+fn ast_grep_detector_reports_project_and_bundled_findings_in_one_run() {
+    let dir = ast_grep_fixture();
+    let output = rust_qa(dir.path(), &["run", "-t", "ast-grep"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("error[no-scratch]"), "{text}");
+    assert!(
+        text.contains("error[rqaci.ast.hardcoded-temp-path]"),
+        "{text}"
+    );
+}
+
+#[test]
+fn ast_grep_bundled_pack_opt_out_keeps_project_rules() {
+    let dir = ast_grep_fixture();
+    write(
+        dir.path(),
+        "qa/rust-qa.toml",
+        "[ast_grep]\nbundled = false\n",
+    );
+    let output = rust_qa(dir.path(), &["run", "-t", "ast-grep"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("error[no-scratch]"), "{text}");
+    assert!(!text.contains("rqaci.ast."), "{text}");
+    std::fs::remove_file(dir.path().join("sgconfig.yml")).unwrap();
+    let output = rust_qa(dir.path(), &["run", "-t", "ast-grep"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("skipped"), "{text}");
+}
+
+#[test]
 fn record_check_rejects_generic_justifications() {
     let dir = fixture();
     write(

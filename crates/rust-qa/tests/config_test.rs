@@ -24,6 +24,21 @@ fn missing_config_file_yields_documented_defaults() {
     assert!(config.tools.clippy && config.tools.dylint && config.tools.suppression);
     assert!(!config.tools.audit);
     assert_eq!(config.scan_exclude, Vec::<String>::new());
+    assert!(
+        config.ast_grep.bundled,
+        "the bundled ast-grep pack is on by default"
+    );
+}
+
+#[test]
+fn bundled_ast_grep_pack_can_be_switched_off() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), DEFAULT_PATH, "[ast_grep]\nbundled = false\n");
+    let config = Config::load(dir.path(), None).unwrap();
+    assert!(!config.ast_grep.bundled);
+    assert!(config.tools.ast_grep, "project rules still run");
+    write(dir.path(), DEFAULT_PATH, "[ast_grep]\nbundle = false\n");
+    assert!(Config::load(dir.path(), None).is_err());
 }
 
 #[test]

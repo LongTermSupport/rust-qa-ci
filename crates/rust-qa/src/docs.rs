@@ -63,7 +63,22 @@ static BUNDLED: &[(&str, &str)] = &[
         include_str!("../docs/rules/rqaci_sensitive_debug_derive.md"),
     ),
     ("warnings", include_str!("../docs/rules/warnings.md")),
+    (
+        "rqaci.ast.hardcoded-temp-path",
+        include_str!("../docs/rules/rqaci.ast.hardcoded-temp-path.md"),
+    ),
+    (
+        "rqaci.ast.shell-c-command",
+        include_str!("../docs/rules/rqaci.ast.shell-c-command.md"),
+    ),
+    (
+        "rqaci.ast.tls-verification-disabled",
+        include_str!("../docs/rules/rqaci.ast.tls-verification-disabled.md"),
+    ),
 ];
+
+/// Prefix of ast-grep rule ids in the project record (see the suppression guard).
+const AST_GREP_PREFIX: &str = "ast-grep::";
 
 /// Identifiers that must resolve (every listed defence plus the built-ins), sorted, and those that
 /// do not.
@@ -159,6 +174,9 @@ impl Resolver {
     /// Returns an error when a project document exists but cannot be read.
     pub fn resolve(&self, id: &str) -> Result<Option<Doc>, Error> {
         let id = id.trim();
+        // Suppressions of ast-grep rules are recorded as `ast-grep::<rule id>`; the document
+        // belongs to the rule id itself.
+        let id = id.strip_prefix(AST_GREP_PREFIX).unwrap_or(id);
         let project = self.docs_dir.join(doc_file_name(id));
         let absolute = self.root.join(&project);
         if absolute.is_file() {
