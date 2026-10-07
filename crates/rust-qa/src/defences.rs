@@ -102,10 +102,23 @@ pub fn enumerate(
             "deny",
             "rust-qa record",
         );
+        for id in [
+            builtin::RECORD_BUDGET,
+            builtin::RECORD_RATCHET,
+            builtin::RECORD_EXPIRED,
+        ] {
+            out.push(id, Engine::Builtin, "deny", "rust-qa record");
+        }
     }
     if tools.suppression {
         out.push(
             builtin::SUPPRESSION_UNRECORDED,
+            Engine::Builtin,
+            "deny",
+            "rust-qa suppression",
+        );
+        out.push(
+            builtin::SUPPRESSION_ALLOW,
             Engine::Builtin,
             "deny",
             "rust-qa suppression",

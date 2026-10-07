@@ -5,13 +5,15 @@ use std::process::{Command, ExitCode};
 
 use clap::{Parser, Subcommand};
 use rust_qa::config::Config;
+use rust_qa::date::Date;
 use rust_qa::defences::{dylint_lints, enumerate};
 use rust_qa::docs::Resolver;
 use rust_qa::finding::Finding;
 use rust_qa::pipeline::{Outcome, execute};
-use rust_qa::record::Record;
+use rust_qa::policy::{RecordPolicy, Status, gate, remove_exceptions, set_high_water};
+use rust_qa::record::{Record, normalise_rule};
 use rust_qa::tools::{Context, RealExecutor, Tool, render_summary, select};
-use rust_qa::{DBF_POINTER, Error, builtin, summary};
+use rust_qa::{DBF_POINTER, Error, builtin, summary, suppression};
 
 /// One QA entry point for a Rust workspace: format, detectors, then runners.
 #[derive(Debug, Parser)]
@@ -77,10 +79,21 @@ enum Cmd {
 
 #[derive(Debug, Subcommand)]
 enum RecordAction {
-    /// Validate every exception.
+    /// Validate every exception and the record policy (budgets, deadlines, trust, ratchet).
     Check,
-    /// List exceptions.
+    /// List exceptions with the budget status.
     List,
+    /// Remove exceptions that match no suppression and lower the ratchet.
+    Prune {
+        /// Print what would be removed without changing the file.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show the exceptions for a rule id (or a 1-based entry number) and the sites each covers.
+    Explain {
+        /// Rule id as printed, or an entry number.
+        target: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -128,22 +141,128 @@ fn dispatch(cli: Cli) -> Result<bool, Error> {
         Cmd::Rules { json } => rules(&root, &config, json),
         Cmd::RuleDoc { id } => rule_doc(&root, &config, &id),
         Cmd::DocsCheck => docs_check(&root, &config),
-        Cmd::Record { action } => {
-            let record = Record::load(&root.join(&config.record))?;
-            match action {
-                RecordAction::Check => {
-                    let findings = record.validate(&config.record);
-                    print_findings(&findings);
-                    Ok(findings.is_empty())
-                }
-                RecordAction::List => {
-                    print_record(&record);
-                    Ok(true)
-                }
-            }
-        }
+        Cmd::Record { action } => record_command(&root, &config, action),
         Cmd::Summary { check } => summary_command(&root, &config, check),
     }
+}
+
+fn record_command(root: &Path, config: &Config, action: RecordAction) -> Result<bool, Error> {
+    let policy = &config.record;
+    let file = root.join(&policy.path);
+    let record = Record::load(&file)?;
+    match action {
+        RecordAction::Check => {
+            let report = gate(root, policy, Date::today(), false)?;
+            println!("{}", report.status);
+            for note in &report.notes {
+                println!("note: {note}");
+            }
+            print_findings(&report.findings);
+            Ok(report.findings.is_empty())
+        }
+        RecordAction::List => {
+            print_record(&record, policy);
+            Ok(true)
+        }
+        RecordAction::Prune { dry_run } => {
+            let exclude = rust_qa::glob_set(&config.scan_exclude)?;
+            let scan = suppression::scan(root, &[], &exclude)?;
+            let stale = suppression::stale(&scan, &record);
+            for index in &stale {
+                if let Some(exception) = record.exceptions.get(*index) {
+                    println!(
+                        "stale: exception #{} `{}` at `{}`",
+                        index + 1,
+                        exception.rule,
+                        exception.path
+                    );
+                }
+            }
+            if stale.is_empty() {
+                println!("no stale exceptions");
+                return Ok(true);
+            }
+            if dry_run {
+                return Ok(true);
+            }
+            let text = remove_exceptions(&rust_qa::read_to_string(&file)?, &stale);
+            let remaining = record.exceptions.len().saturating_sub(stale.len());
+            let text = set_high_water(&text, remaining).unwrap_or(text);
+            std::fs::write(&file, text).map_err(|source| Error::Write {
+                path: file.clone(),
+                source,
+            })?;
+            println!(
+                "removed {} stale exception(s); {remaining} remain",
+                stale.len()
+            );
+            Ok(true)
+        }
+        RecordAction::Explain { target } => explain(root, config, &record, &target),
+    }
+}
+
+fn explain(root: &Path, config: &Config, record: &Record, target: &str) -> Result<bool, Error> {
+    let policy = &config.record;
+    let wanted = normalise_rule(target);
+    let chosen: Vec<usize> = match target.parse::<usize>() {
+        Ok(number) => vec![number.saturating_sub(1)],
+        Err(_) => (0..record.exceptions.len())
+            .filter(|i| {
+                record
+                    .exceptions
+                    .get(*i)
+                    .is_some_and(|e| normalise_rule(&e.rule) == wanted)
+            })
+            .collect(),
+    };
+    let chosen: Vec<(usize, &rust_qa::record::Exception)> = chosen
+        .into_iter()
+        .filter_map(|i| record.exceptions.get(i).map(|e| (i, e)))
+        .collect();
+    if chosen.is_empty() {
+        println!("no exception matches `{target}`");
+        return Ok(false);
+    }
+    let exclude = rust_qa::glob_set(&config.scan_exclude)?;
+    let scan = suppression::scan(root, &[], &exclude)?;
+    let today = Date::today();
+    for (index, exception) in chosen {
+        let model = exception.added_by_model.as_deref().unwrap_or("(missing)");
+        println!(
+            "exception #{} `{}` at `{}`",
+            index + 1,
+            exception.rule,
+            exception.path
+        );
+        println!("  justification: {}", exception.justification);
+        println!(
+            "  decided_by: {}; added_by_model: {model} (tier {}); policy-level: {}",
+            exception.decided_by.as_deref().unwrap_or("(missing)"),
+            policy.tier(model).name(),
+            exception.policy
+        );
+        match (exception.decided_on, exception.review_by) {
+            (Some(on), Some(by)) => println!(
+                "  decided_on: {on}; review_by: {by} ({} day(s) left)",
+                today.days_until(by)
+            ),
+            _ => println!("  decided_on or review_by missing"),
+        }
+        let sites: Vec<String> = scan
+            .suppressions
+            .iter()
+            .filter(|s| record.find(&s.rule, &s.path) == Some(index))
+            .map(|s| format!("{}:{} ({})", s.path.display(), s.line, s.route.describe()))
+            .collect();
+        if sites.is_empty() {
+            println!("  covers: nothing (stale; `rust-qa record prune` removes it)");
+        }
+        for site in sites {
+            println!("  covers: {site}");
+        }
+    }
+    Ok(true)
 }
 
 fn rule_doc(root: &Path, config: &Config, id: &str) -> Result<bool, Error> {
@@ -261,16 +380,30 @@ fn relative_to_root(root: &Path, path: &Path) -> Result<PathBuf, Error> {
 
 fn rules(root: &Path, config: &Config, json: bool) -> Result<bool, Error> {
     let defences = enumerate(root, config, &dylint_lints)?;
-    let record = Record::load(&root.join(&config.record))?;
+    let policy = &config.record;
+    let record = Record::load(&root.join(&policy.path))?;
     if json {
+        let status = Status::of(&record, policy);
         let value = serde_json::json!({
             "defences": defences.iter().map(|d| serde_json::json!({
                 "id": d.id, "engine": d.engine.name(), "level": d.level, "origin": d.origin,
                 "doc": format!("rust-qa rule-doc {}", d.id),
             })).collect::<Vec<_>>(),
             "record": record.exceptions.iter().map(|e| serde_json::json!({
-                "rule": e.rule, "path": e.path, "justification": e.justification, "decided_by": e.decided_by,
+                "rule": e.rule, "path": e.path, "justification": e.justification,
+                "decided_by": e.decided_by, "added_by_model": e.added_by_model,
+                "tier": e.added_by_model.as_deref().map(|m| policy.tier(m).name()),
+                "decided_on": e.decided_on.map(|d| d.to_string()),
+                "review_by": e.review_by.map(|d| d.to_string()), "policy": e.policy,
             })).collect::<Vec<_>>(),
+            "budget": {
+                "total": status.total, "max_total": status.max_total,
+                "high_water": status.high_water, "max_per_rule": status.max_per_rule,
+                "policy": status.policy, "max_policy": status.max_policy,
+                "tiers": status.tiers.iter().map(|(tier, count, cap)| serde_json::json!({
+                    "tier": tier.name(), "count": count, "max_count": cap,
+                })).collect::<Vec<_>>(),
+            },
         });
         println!("{value:#}");
         return Ok(true);
@@ -286,18 +419,22 @@ fn rules(root: &Path, config: &Config, json: bool) -> Result<bool, Error> {
         );
     }
     println!();
-    print_record(&record);
+    print_record(&record, policy);
     Ok(true)
 }
 
-fn print_record(record: &Record) {
+fn print_record(record: &Record, policy: &RecordPolicy) {
     println!("Project record ({} exception(s)):", record.exceptions.len());
     for exception in &record.exceptions {
+        let review_by = exception
+            .review_by
+            .map_or_else(|| "-".to_owned(), |date| date.to_string());
         println!(
-            "  {:<40} {:<36} {}",
+            "  {:<40} {:<36} review by {review_by:<10} {}",
             exception.rule, exception.path, exception.justification
         );
     }
+    println!("{}", Status::of(record, policy));
 }
 
 fn docs_check(root: &Path, config: &Config) -> Result<bool, Error> {

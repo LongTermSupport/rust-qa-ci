@@ -4,6 +4,21 @@
 # dylint UI fixtures contain deliberate violations; they are proven by the lint library's own tests.
 scan_exclude = ["lints/*/ui/*", "lints/*/ui_*/*"]
 
+[record]
+# Five entries today; the ratchet in qa/record.toml holds the count, this caps it.
+max_total = 6
+max_per_rule = 1
+max_policy = 0
+max_review_days = 180
+deciders = ["joseph"]
+
+[record.trust]
+models = { opus = "high", sonnet = "medium", haiku = "low" }
+
+[record.trust.medium]
+max_review_days = 30
+max_count = 5
+
 [coverage]
 fail_under_lines = 80
 

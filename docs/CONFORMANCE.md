@@ -15,7 +15,7 @@ Specs: method 1.1.0, detector 1.0.0, toolchain 0.2.0 (https://defence-before-fix
 | 4.4 | Local, subset-capable (one file), ids printed unaltered | Met with note | `rust-qa run -p <file>`; per-crate engines analyse the owning crate and print only diagnostics in the requested paths |
 | 4.5 | Detectors before runners; stop on detector failure | Met | `pipeline` module and its tests; end-to-end test in `tests/main_test.rs` |
 | 5.1-5.3 | List active defences without running them, derived from configuration, project defences included | Met | `rust-qa rules` reads Cargo `[lints]`, dylint metadata, `sgconfig.yml` rule dirs and `qa/rust-qa.toml` (which also switches the bundled `rqaci.ast.*` ast-grep pack) |
-| 6.1-6.3 | Project record read by the toolchain, justification required, generic text rejected, record enumerable | Met | `qa/record.toml`, `rqaci.record.invalid`, `rqaci.record.stale`, `rust-qa record list`, `rust-qa rules` |
+| 6.1-6.3 | Project record read by the toolchain, justification required, generic text rejected, record enumerable | Met | `qa/record.toml`, `rqaci.record.invalid`, `rqaci.record.stale`, `rust-qa record list`, `rust-qa rules`; beyond the spec, `rqaci.record.budget`, `rqaci.record.ratchet` and `rqaci.record.expired` keep the record small (README, "Anti-bloat controls") |
 | 8.1 | Release fails if a bundled defence lacks docs | Met as test | `tests/builtin_test.rs`, `tests/docs_test.rs`, `tests/ast_grep_test.rs` (bundled ast-grep rules: docs, plus fixtures proving each fires and stays quiet) |
 | 8.2 | Toolchain runs its own defences on its own source | Met | `qa/rust-qa.toml`; `rust-qa run` in this repository loads the bundled dylint library and runs the bundled ast-grep pack |
 

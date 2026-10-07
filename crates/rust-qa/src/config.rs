@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::Error;
+use crate::policy::RecordPolicy;
 
 /// Location of the project configuration file, relative to the workspace root.
 pub const DEFAULT_PATH: &str = "qa/rust-qa.toml";
@@ -13,8 +14,10 @@ pub const DEFAULT_PATH: &str = "qa/rust-qa.toml";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Project record of exceptions.
-    pub record: PathBuf,
+    /// Project record of exceptions and its anti-bloat policy: either `record = "<path>"` or a
+    /// `[record]` table.
+    #[serde(deserialize_with = "record_setting")]
+    pub record: RecordPolicy,
     /// Directory of project-authored rule documents (`<id>.md`).
     pub docs_dir: PathBuf,
     /// Globs (relative to the root) excluded from source scans (the suppression guard and the
@@ -36,7 +39,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            record: PathBuf::from("qa/record.toml"),
+            record: RecordPolicy::default(),
             docs_dir: PathBuf::from("docs/defences"),
             scan_exclude: Vec::new(),
             summary: Summary::default(),
@@ -203,6 +206,25 @@ impl Config {
                 path.display()
             )));
         }
+        config
+            .record
+            .validate()
+            .map_err(|problems| Error::Usage(format!("{}: [record] {problems}", path.display())))?;
         Ok(config)
+    }
+}
+
+/// `record = "<path>"` (defaults for everything else) or a `[record]` table.
+fn record_setting<'de, D: Deserializer<'de>>(deserializer: D) -> Result<RecordPolicy, D::Error> {
+    match toml::Value::deserialize(deserializer)? {
+        toml::Value::String(path) => Ok(RecordPolicy {
+            path: PathBuf::from(path),
+            ..RecordPolicy::default()
+        }),
+        table @ toml::Value::Table(_) => table.try_into().map_err(serde::de::Error::custom),
+        other => Err(serde::de::Error::custom(format!(
+            "`record` must be a path or a table, found {}",
+            other.type_str()
+        ))),
     }
 }

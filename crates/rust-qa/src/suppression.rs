@@ -17,7 +17,7 @@ use syn::visit::Visit;
 use syn::{Meta, Token};
 use toml::Value;
 
-use crate::builtin::{RECORD_STALE, SUPPRESSION_UNRECORDED};
+use crate::builtin::{RECORD_STALE, SUPPRESSION_ALLOW, SUPPRESSION_UNRECORDED};
 use crate::finding::Finding;
 use crate::manifest::{Level, lint_settings, workspace_files};
 use crate::record::{Record, normalise_rule};
@@ -26,8 +26,10 @@ use crate::{Error, read_to_string};
 /// How a suppression is expressed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
-    /// `#[allow]`/`#[expect]` attribute, possibly inside `cfg_attr`.
+    /// `#[expect]` attribute, possibly inside `cfg_attr`.
     Attribute,
+    /// `#[allow]` attribute, possibly inside `cfg_attr`; also fails `rqaci.suppression.allow`.
+    AllowAttribute,
     /// Lint attribute written inside a macro invocation or definition.
     MacroAttribute,
     /// `// ast-grep-ignore` comment.
@@ -48,6 +50,7 @@ impl Route {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Attribute => "lint attribute",
+            Self::AllowAttribute => "allow attribute",
             Self::MacroAttribute => "lint attribute in a macro",
             Self::AstGrepIgnore => "ast-grep ignore comment",
             Self::ManifestLints => "Cargo [lints] allow level",
@@ -136,7 +139,6 @@ pub fn check(
     report_stale: bool,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let mut used = vec![false; record.exceptions.len()];
     for (path, message) in &result.unparseable {
         findings.push(Finding {
             rule: SUPPRESSION_UNRECORDED,
@@ -146,13 +148,21 @@ pub fn check(
         });
     }
     for suppression in &result.suppressions {
-        match record.find(&suppression.rule, &suppression.path) {
-            Some(index) => {
-                if let Some(slot) = used.get_mut(index) {
-                    *slot = true;
-                }
-            }
-            None => findings.push(Finding {
+        if suppression.route == Route::AllowAttribute
+            && record.find(SUPPRESSION_ALLOW, &suppression.path).is_none()
+        {
+            findings.push(Finding {
+                rule: SUPPRESSION_ALLOW,
+                path: suppression.path.clone(),
+                line: suppression.line,
+                message: format!(
+                    "`allow` silences `{}` with no end date; use `expect({}, reason = \"...\")`, which fails once the lint stops firing",
+                    suppression.rule, suppression.rule
+                ),
+            });
+        }
+        if record.find(&suppression.rule, &suppression.path).is_none() {
+            findings.push(Finding {
                 rule: SUPPRESSION_UNRECORDED,
                 path: suppression.path.clone(),
                 line: suppression.line,
@@ -162,27 +172,50 @@ pub fn check(
                     suppression.rule,
                     record_path.display()
                 ),
-            }),
+            });
         }
     }
     if report_stale {
-        for (index, exception) in record.exceptions.iter().enumerate() {
-            if used.get(index) == Some(&false) {
-                findings.push(Finding {
-                    rule: RECORD_STALE,
-                    path: record_path.to_path_buf(),
-                    line: 0,
-                    message: format!(
-                        "exception #{} (rule `{}`, path `{}`) matches no suppression; remove it",
-                        index + 1,
-                        exception.rule,
-                        exception.path
-                    ),
-                });
-            }
+        for index in stale(result, record) {
+            let Some(exception) = record.exceptions.get(index) else {
+                continue;
+            };
+            findings.push(Finding {
+                rule: RECORD_STALE,
+                path: record_path.to_path_buf(),
+                line: 0,
+                message: format!(
+                    "exception #{} (rule `{}`, path `{}`) matches no suppression; remove it (`rust-qa record prune`)",
+                    index + 1,
+                    exception.rule,
+                    exception.path
+                ),
+            });
         }
     }
     findings
+}
+
+/// Indexes of record exceptions that cover no suppression in a full scan.
+#[must_use]
+pub fn stale(result: &ScanResult, record: &Record) -> Vec<usize> {
+    let mut used = vec![false; record.exceptions.len()];
+    for suppression in &result.suppressions {
+        let mut rules = vec![suppression.rule.as_str()];
+        if suppression.route == Route::AllowAttribute {
+            rules.push(SUPPRESSION_ALLOW);
+        }
+        for rule in rules {
+            if let Some(index) = record.find(rule, &suppression.path)
+                && let Some(slot) = used.get_mut(index)
+            {
+                *slot = true;
+            }
+        }
+    }
+    (0..used.len())
+        .filter(|index| used.get(*index) == Some(&false))
+        .collect()
 }
 
 fn is_scanned(rel: &Path) -> bool {
@@ -237,6 +270,11 @@ fn collect_meta(meta: &Meta, line: usize, route: Route, out: &mut Vec<(String, u
     };
     match name.as_str() {
         "allow" | "expect" => {
+            let route = if name == "allow" && route == Route::Attribute {
+                Route::AllowAttribute
+            } else {
+                route
+            };
             for item in nested {
                 if let Meta::Path(path) = item {
                     let segments: Vec<String> =

@@ -1,27 +1,53 @@
 # rust-qa-ci's own project record. Every suppression in this repository must match an entry here
 # (README.md, "Project record").
 
+[ratchet]
+high_water = 5
+decided_by = "joseph"
+decided_on = 2026-10-07
+reason = "Adopted at the five entries the record held when the anti-bloat controls shipped; it only shrinks from here."
+
 [[exception]]
 rule = "clippy.toml::allow-unwrap-in-tests"
 path = "clippy.toml"
 justification = "Tests report failure by panicking; unwrap in test code gives the failing call site, while production code still denies clippy::unwrap_used."
+decided_by = "joseph"
+added_by_model = "sonnet-5-5"
+decided_on = 2026-10-07
+review_by = 2026-11-06
 
 [[exception]]
 rule = "clippy.toml::allow-expect-in-tests"
 path = "clippy.toml"
 justification = "Tests report failure by panicking; expect messages make test failures readable, while production code still denies clippy::expect_used."
+decided_by = "joseph"
+added_by_model = "sonnet-5-5"
+decided_on = 2026-10-07
+review_by = 2026-11-06
 
 [[exception]]
 rule = "clippy.toml::allow-panic-in-tests"
 path = "clippy.toml"
 justification = "Test doubles may panic on calls a test never expects; production code still denies clippy::panic."
+decided_by = "joseph"
+added_by_model = "sonnet-5-5"
+decided_on = 2026-10-07
+review_by = 2026-11-06
 
 [[exception]]
 rule = "clippy.toml::allow-indexing-slicing-in-tests"
 path = "clippy.toml"
 justification = "Tests index fixture vectors whose length the same test asserts first; production code still denies clippy::indexing_slicing."
+decided_by = "joseph"
+added_by_model = "sonnet-5-5"
+decided_on = 2026-10-07
+review_by = 2026-11-06
 
 [[exception]]
 rule = "clippy::struct_excessive_bools"
 path = "crates/rust-qa/src/config.rs"
 justification = "The tool switch table mirrors the configuration file one key per tool; an enum set would make the TOML schema harder to read and validate."
+decided_by = "joseph"
+added_by_model = "sonnet-5-5"
+decided_on = 2026-10-07
+review_by = 2026-11-06

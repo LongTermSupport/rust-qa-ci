@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 
 use crate::config::{Config, MutantsMode};
+use crate::date::Date;
 use crate::defences::{DylintLint, enumerate};
 use crate::diagnostics::{dedupe, in_scope, parse_cargo_messages};
 use crate::finding::Finding;
@@ -519,15 +520,24 @@ impl RealExecutor {
     }
 
     fn record(&self) -> Outcome {
-        let path = &self.ctx.config.record;
-        match Record::load(&self.ctx.root.join(path)) {
-            Ok(record) => Self::report(&record.validate(path)),
+        let ctx = &self.ctx;
+        let policy = &ctx.config.record;
+        match crate::policy::gate(&ctx.root, policy, Date::today(), ctx.fix && !ctx.ci) {
+            Ok(report) => {
+                for line in report.status.to_string().lines() {
+                    println!("    {line}");
+                }
+                for note in &report.notes {
+                    println!("    note: {note}");
+                }
+                Self::report(&report.findings)
+            }
             Err(error) => {
                 println!(
                     "{}",
                     Finding {
                         rule: builtin::RECORD_INVALID,
-                        path: path.clone(),
+                        path: policy.path.clone(),
                         line: 0,
                         message: error.to_string(),
                     }
@@ -539,11 +549,11 @@ impl RealExecutor {
 
     fn suppression(&self) -> Result<Outcome, Error> {
         let ctx = &self.ctx;
-        let record = Record::load(&ctx.root.join(&ctx.config.record))?;
+        let record_path = &ctx.config.record.path;
+        let record = Record::load(&ctx.root.join(record_path))?;
         let exclude = crate::glob_set(&ctx.config.scan_exclude)?;
         let result = suppression::scan(&ctx.root, &ctx.scope, &exclude)?;
-        let findings =
-            suppression::check(&result, &record, &ctx.config.record, ctx.scope.is_empty());
+        let findings = suppression::check(&result, &record, record_path, ctx.scope.is_empty());
         println!("    {} suppression(s) found", result.suppressions.len());
         Ok(Self::report(&findings))
     }
@@ -749,6 +759,6 @@ pub fn render_summary(
     dylint_lister: fn(&Path) -> Result<Vec<DylintLint>, Error>,
 ) -> Result<String, Error> {
     let defences = enumerate(root, config, &dylint_lister)?;
-    let record = Record::load(&root.join(&config.record))?;
-    Ok(summary::render(&defences, &record))
+    let record = Record::load(&root.join(&config.record.path))?;
+    Ok(summary::render(&defences, &record, &config.record))
 }

@@ -6,9 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rust_qa::builtin::{RECORD_STALE, SUPPRESSION_UNRECORDED};
+use rust_qa::builtin::{RECORD_STALE, SUPPRESSION_ALLOW, SUPPRESSION_UNRECORDED};
 use rust_qa::record::{Exception, Record};
-use rust_qa::suppression::{Route, Suppression, check, scan};
+use rust_qa::suppression::{Route, Suppression, check, scan, stale};
 
 fn src(text: &str) -> String {
     text.replace("LINTOFF(", "allow(")
@@ -153,9 +153,19 @@ fn scan_finds_every_suppression_route() {
             1,
             Route::Attribute,
         ),
-        ("src/lib.rs", "dead_code", 3, Route::Attribute),
-        ("src/lib.rs", "clippy::unwrap_used", 6, Route::Attribute),
-        ("src/lib.rs", "clippy::expect_used", 6, Route::Attribute),
+        ("src/lib.rs", "dead_code", 3, Route::AllowAttribute),
+        (
+            "src/lib.rs",
+            "clippy::unwrap_used",
+            6,
+            Route::AllowAttribute,
+        ),
+        (
+            "src/lib.rs",
+            "clippy::expect_used",
+            6,
+            Route::AllowAttribute,
+        ),
         ("src/lib.rs", "unused_variables", 11, Route::MacroAttribute),
         (
             "src/lib.rs",
@@ -241,8 +251,72 @@ fn exception(rule: &str, path: &str) -> Exception {
         rule: rule.to_owned(),
         path: path.to_owned(),
         justification: "A long enough and specific justification for the test.".to_owned(),
-        decided_by: None,
+        ..Exception::default()
     }
+}
+
+fn record(exceptions: Vec<Exception>) -> Record {
+    Record {
+        ratchet: None,
+        exceptions,
+    }
+}
+
+#[test]
+fn allow_attributes_fail_even_when_recorded_and_expect_is_preferred() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/a.rs",
+        "#[LINTOFF(dead_code)]\nfn a() {}\n#[expect(unused, reason = \"r\")]\nfn b() {}\n",
+    );
+    let result = scan(dir.path(), &[], &no_exclude()).unwrap();
+    let rec = record(vec![
+        exception("dead_code", "src/a.rs"),
+        exception("unused", "src/a.rs"),
+    ]);
+    let findings = check(&result, &rec, Path::new("qa/record.toml"), true);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].rule, SUPPRESSION_ALLOW);
+    assert_eq!(findings[0].line, 1);
+    assert!(findings[0].message.contains("expect(dead_code"));
+}
+
+#[test]
+fn an_allow_can_be_recorded_as_its_own_exception() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/gen.rs",
+        "#[LINTOFF(dead_code)]\nfn a() {}\n",
+    );
+    let result = scan(dir.path(), &[], &no_exclude()).unwrap();
+    let rec = record(vec![
+        exception("dead_code", "src/gen.rs"),
+        exception(SUPPRESSION_ALLOW, "src/gen.rs"),
+    ]);
+    assert_eq!(
+        check(&result, &rec, Path::new("qa/record.toml"), true),
+        vec![]
+    );
+    assert_eq!(stale(&result, &rec), Vec::<usize>::new());
+}
+
+#[test]
+fn stale_lists_exceptions_that_cover_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/a.rs",
+        "#[expect(dead_code, reason = \"r\")]\nfn a() {}\n",
+    );
+    let result = scan(dir.path(), &[], &no_exclude()).unwrap();
+    let rec = record(vec![
+        exception("unused", "src/a.rs"),
+        exception("dead_code", "src/a.rs"),
+        exception("dead_code", "src/b.rs"),
+    ]);
+    assert_eq!(stale(&result, &rec), vec![0, 2]);
 }
 
 #[test]
@@ -254,9 +328,7 @@ fn recorded_suppressions_pass_and_unrecorded_ones_fail() {
         "#[expect(dead_code, reason = \"r\")]\nfn a() {}\n#[expect(clippy::unwrap_used, reason = \"r\")]\nfn b() {}\n",
     );
     let result = scan(dir.path(), &[], &no_exclude()).unwrap();
-    let record = Record {
-        exceptions: vec![exception("dead_code", concat!("src", "/", "*.rs"))],
-    };
+    let record = record(vec![exception("dead_code", concat!("src", "/", "*.rs"))]);
     let findings = check(&result, &record, Path::new("qa/record.toml"), true);
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert_eq!(findings[0].rule, SUPPRESSION_UNRECORDED);
@@ -270,9 +342,7 @@ fn exceptions_matching_nothing_are_stale_only_on_full_scans() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "src/a.rs", "fn a() {}\n");
     let result = scan(dir.path(), &[], &no_exclude()).unwrap();
-    let record = Record {
-        exceptions: vec![exception("dead_code", "src/a.rs")],
-    };
+    let record = record(vec![exception("dead_code", "src/a.rs")]);
     let full = check(&result, &record, Path::new("qa/record.toml"), true);
     assert_eq!(full.len(), 1);
     assert_eq!(full[0].rule, RECORD_STALE);
