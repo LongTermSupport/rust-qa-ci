@@ -6,7 +6,9 @@ enforcement through a single command, offline rule documentation, a project reco
 exception, and an enumerable list of active defences.
 
 Status: early (0.x). Conformance is **partial**; see [docs/CONFORMANCE.md](docs/CONFORMANCE.md).
-Licence: not yet chosen; until it is, no licence is granted.
+Licence: MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT),
+[LICENSE-APACHE](LICENSE-APACHE)). Unless you state otherwise, any contribution you intentionally
+submit for inclusion is dual licensed as above, without additional terms or conditions.
 
 ## What it runs
 
