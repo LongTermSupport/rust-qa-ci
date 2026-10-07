@@ -1,0 +1,33 @@
+id: rqaci.ast.shell-c-command
+language: rust
+severity: error
+message: a shell interprets this command string; run the program directly and pass each argument separately
+note: "rust-qa rule-doc rqaci.ast.shell-c-command"
+rule:
+  kind: call_expression
+  all:
+    # `.arg(..)` or `.args(..)` ...
+    - has:
+        field: function
+        kind: field_expression
+        has:
+          field: field
+          regex: ^args?$
+    # ... passing a `-c` flag (alone or combined, such as `-lc` or `-ec`) ...
+    - has:
+        field: arguments
+        has:
+          stopBy: end
+          kind: string_literal
+          regex: ^"-[A-Za-z]*c[A-Za-z]*"$
+    # ... to a builder chain rooted in `Command::new("<shell>")`.
+    - has:
+        stopBy: end
+        kind: call_expression
+        all:
+          - has:
+              field: function
+              regex: (^|::)Command::new$
+          - has:
+              field: arguments
+              regex: ^\(\s*"(sh|bash|zsh|dash|ksh|mksh|ash|fish)"\s*\)$

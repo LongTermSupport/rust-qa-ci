@@ -90,6 +90,34 @@ fn bundled_doc_resolves_without_project_docs() {
 }
 
 #[test]
+fn ast_grep_record_identifiers_resolve_to_the_rule_doc() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolver = Resolver::new(dir.path(), Path::new("docs/defences"));
+    for id in rust_qa::ast_grep::bundled_ids() {
+        let doc = resolver
+            .resolve(&format!("ast-grep::{id}"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.source, Source::Bundled);
+        assert!(doc.text.starts_with(&format!("# {id}\n")));
+    }
+    std::fs::create_dir_all(dir.path().join("docs/defences")).unwrap();
+    std::fs::write(
+        dir.path().join("docs/defences/no-println.md"),
+        "# no-println\n",
+    )
+    .unwrap();
+    let doc = resolver.resolve("ast-grep::no-println").unwrap().unwrap();
+    assert!(matches!(doc.source, Source::Project(_)));
+    assert!(
+        resolver
+            .resolve("ast-grep::undocumented")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn clippy_lints_resolve_offline_from_the_installed_clippy() {
     let dir = tempfile::tempdir().unwrap();
     let resolver = Resolver::new(dir.path(), Path::new("docs/defences"));

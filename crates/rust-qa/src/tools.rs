@@ -12,7 +12,7 @@ use crate::finding::Finding;
 use crate::manifest::has_dylint_metadata;
 use crate::pipeline::{Executor, Outcome, Phase};
 use crate::record::Record;
-use crate::{Error, builtin, summary, suppression};
+use crate::{Error, ast_grep, builtin, summary, suppression};
 
 /// Every tool, declared in execution order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -374,9 +374,7 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
                 .arg("--all-features");
             vec![json(cmd)]
         }
-        Tool::AstGrep => vec![
-            Cmd::new("ast-grep", &["scan"]).args(ctx.scope.iter().map(|p| p.display().to_string())),
-        ],
+        Tool::AstGrep => ast_grep_plan(ctx),
         Tool::Deny => vec![Cmd::new(
             "cargo",
             &["deny", "--workspace", "--all-features", "check"],
@@ -416,6 +414,29 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
         },
         Tool::Record | Tool::Suppression | Tool::Summary | Tool::Docs => Vec::new(),
     }
+}
+
+/// The project's own rules (when `sgconfig.yml` exists), then the bundled pack (unless switched
+/// off; excluding `scan_exclude`, since the project's ast-grep ignores do not apply to it).
+fn ast_grep_plan(ctx: &Context) -> Vec<Cmd> {
+    let scope = || ctx.scope.iter().map(|p| p.display().to_string());
+    let mut cmds = Vec::new();
+    if ctx.root.join("sgconfig.yml").is_file() {
+        cmds.push(Cmd::new("ast-grep", &["scan"]).args(scope()));
+    }
+    if ctx.config.ast_grep.bundled {
+        let excludes = ctx
+            .config
+            .scan_exclude
+            .iter()
+            .flat_map(|glob| ["--globs".to_owned(), format!("!{glob}")]);
+        cmds.push(
+            Cmd::new("ast-grep", &["scan", "--rule", ast_grep::PACK_PATH])
+                .args(excludes)
+                .args(scope()),
+        );
+    }
+    cmds
 }
 
 /// Runs tools for real against the workspace in `ctx`.
@@ -463,9 +484,7 @@ impl RealExecutor {
             Tool::Suppression => self.suppression(),
             Tool::Summary => self.summary(),
             Tool::Docs => self.docs(),
-            Tool::AstGrep if !root.join("sgconfig.yml").is_file() => {
-                Ok(Outcome::Skipped("no sgconfig.yml".to_owned()))
-            }
+            Tool::AstGrep => self.ast_grep(),
             Tool::Dylint if !has_dylint_metadata(root)? => Ok(Outcome::Skipped(
                 "no [workspace.metadata.dylint] libraries".to_owned(),
             )),
@@ -579,17 +598,43 @@ impl RealExecutor {
 
     fn commands(&self, tool: Tool) -> Result<Outcome, Error> {
         for cmd in plan(tool, &self.ctx) {
-            println!("$ {}", cmd.display());
-            let status = Command::new(&cmd.program)
-                .args(&cmd.args)
-                .current_dir(&self.ctx.root)
-                .status()
-                .map_err(|e| missing_tool(&cmd, &e))?;
-            if !status.success() {
+            if !self.status(&cmd)? {
                 return Ok(Outcome::Failed);
             }
         }
         Ok(Outcome::Passed)
+    }
+
+    fn status(&self, cmd: &Cmd) -> Result<bool, Error> {
+        println!("$ {}", cmd.display());
+        let status = Command::new(&cmd.program)
+            .args(&cmd.args)
+            .current_dir(&self.ctx.root)
+            .status()
+            .map_err(|e| missing_tool(cmd, &e))?;
+        Ok(status.success())
+    }
+
+    /// Runs every planned scan, so project and bundled findings are reported together.
+    fn ast_grep(&self) -> Result<Outcome, Error> {
+        let cmds = plan(Tool::AstGrep, &self.ctx);
+        if cmds.is_empty() {
+            return Ok(Outcome::Skipped(
+                "no sgconfig.yml and the bundled pack is off".to_owned(),
+            ));
+        }
+        if self.ctx.config.ast_grep.bundled {
+            ast_grep::write_pack(&self.ctx.root)?;
+        }
+        let mut passed = true;
+        for cmd in &cmds {
+            passed &= self.status(cmd)?;
+        }
+        Ok(if passed {
+            Outcome::Passed
+        } else {
+            Outcome::Failed
+        })
     }
 
     fn scoped_diagnostics(&self, tool: Tool) -> Result<Outcome, Error> {

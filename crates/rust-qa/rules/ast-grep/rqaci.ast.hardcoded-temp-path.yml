@@ -1,0 +1,11 @@
+id: rqaci.ast.hardcoded-temp-path
+language: rust
+severity: error
+message: hard-coded path in the shared temporary directory; create a private one with `tempfile` instead
+note: "rust-qa rule-doc rqaci.ast.hardcoded-temp-path"
+rule:
+  any:
+    - kind: string_literal
+      regex: ^"/(var/)?tmp(/|")
+    - kind: raw_string_literal
+      regex: ^r#*"/(var/)?tmp(/|")

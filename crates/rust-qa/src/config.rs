@@ -17,13 +17,16 @@ pub struct Config {
     pub record: PathBuf,
     /// Directory of project-authored rule documents (`<id>.md`).
     pub docs_dir: PathBuf,
-    /// Globs (relative to the root) excluded from source scans, in addition to `target` and `.git`
-    /// directories, which are always skipped.
+    /// Globs (relative to the root) excluded from source scans (the suppression guard and the
+    /// bundled ast-grep pack), in addition to `target` and `.git` directories, which are always
+    /// skipped.
     pub scan_exclude: Vec<String>,
     /// Agent summary settings.
     pub summary: Summary,
     /// Tool switches.
     pub tools: Tools,
+    /// ast-grep detector settings.
+    pub ast_grep: AstGrep,
     /// Coverage gate.
     pub coverage: Coverage,
     /// Mutation testing policy.
@@ -38,6 +41,7 @@ impl Default for Config {
             scan_exclude: Vec::new(),
             summary: Summary::default(),
             tools: Tools::default(),
+            ast_grep: AstGrep::default(),
             coverage: Coverage::default(),
             mutants: Mutants::default(),
         }
@@ -108,6 +112,21 @@ impl Default for Tools {
             coverage: true,
             mutants: true,
         }
+    }
+}
+
+/// ast-grep detector settings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AstGrep {
+    /// Run the bundled rule pack (`rqaci.ast.*`) in addition to the project's `sgconfig.yml`
+    /// rules.
+    pub bundled: bool,
+}
+
+impl Default for AstGrep {
+    fn default() -> Self {
+        Self { bundled: true }
     }
 }
 

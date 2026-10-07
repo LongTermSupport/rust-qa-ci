@@ -102,6 +102,41 @@ fn disabled_tools_contribute_nothing() {
 }
 
 #[test]
+fn bundled_ast_grep_rules_are_listed_beside_project_rules_unless_switched_off() {
+    let dir = workspace();
+    let bundled: Vec<&str> = rust_qa::ast_grep::bundled_ids().collect();
+    assert_ne!(bundled, Vec::<&str>::new());
+    let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
+    for id in &bundled {
+        let defence = defences.iter().find(|d| d.id == *id).unwrap();
+        assert_eq!(defence.engine, Engine::AstGrep);
+        assert_eq!(defence.level, "error");
+        assert_eq!(defence.origin, "rust-qa bundled ast-grep pack");
+    }
+    assert!(defences.iter().any(|d| d.id == "no-println"));
+
+    let mut config = Config::default();
+    config.ast_grep.bundled = false;
+    let defences = enumerate(dir.path(), &config, FAKE_DYLINT).unwrap();
+    assert!(defences.iter().all(|d| !bundled.contains(&d.id.as_str())));
+    assert!(
+        defences.iter().any(|d| d.id == "no-println"),
+        "project rules stay active"
+    );
+}
+
+#[test]
+fn bundled_ast_grep_rules_need_no_project_sgconfig() {
+    let dir = workspace();
+    std::fs::remove_file(dir.path().join("sgconfig.yml")).unwrap();
+    let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
+    for id in rust_qa::ast_grep::bundled_ids() {
+        assert!(defences.iter().any(|d| d.id == id), "{id} not listed");
+    }
+    assert!(defences.iter().all(|d| d.id != "no-println"));
+}
+
+#[test]
 fn identifiers_are_unique() {
     let dir = workspace();
     write(

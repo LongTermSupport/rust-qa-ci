@@ -20,7 +20,7 @@ all static findings; any format or detector failure stops the run before the fir
 | | `suppression` | unrecorded suppressions (`rqaci.suppression.unrecorded`, `rqaci.record.stale`) |
 | | `summary` | agent summary freshness (`rqaci.summary.stale`) |
 | | `docs` | every listed identifier resolves to documentation (`rqaci.docs.dangling`) |
-| | `ast-grep` | supplementary syntactic rules from `sgconfig.yml` |
+| | `ast-grep` | supplementary syntactic rules: the project's `sgconfig.yml` rules, then the bundled `rqaci.ast.*` pack |
 | | `clippy` | Clippy with `-D warnings` and the Cargo `[lints]` tables |
 | | `dylint` | type-aware rule libraries from `[workspace.metadata.dylint]` |
 | runners | `deny` | cargo-deny (advisories, bans, licences, sources) |
@@ -53,7 +53,23 @@ Write each rule against the richest layer that can express it.
    `dylint_testing` UI tests, and list it under `[workspace.metadata.dylint] libraries`. Declare
    lints at `Deny` and choose stable, namespaced names.
 2. **ast-grep (supplementary)**: YAML rules for cheap single-file checks where syntax provably
-   suffices. Set `severity: error` to block. Record in the rule's doc why syntax suffices.
+   suffices. Set `severity: error` to block. Record in the rule's doc why syntax suffices. List
+   rule directories under `ruleDirs` in `sgconfig.yml` at the workspace root.
+
+`rust-qa` also ships a small ast-grep pack, on by default, that runs beside the project's rules
+(a second `ast-grep scan`, so neither set hides the other's findings; it needs no `sgconfig.yml`
+and honours `scan_exclude`). Each rule is a cheap single-file check that no Clippy or rustc lint
+covers, and its doc says why syntax suffices:
+
+| Rule | Flags |
+|---|---|
+| `rqaci.ast.shell-c-command` | `Command::new("sh")` (or another shell) given `-c` and a command string |
+| `rqaci.ast.hardcoded-temp-path` | string literals under `/tmp` or `/var/tmp` |
+| `rqaci.ast.tls-verification-disabled` | `danger_accept_invalid_certs(true)` / `danger_accept_invalid_hostnames(true)` |
+
+Switch the pack off with `[ast_grep] bundled = false`; project rules keep running. Silence one
+finding with `// ast-grep-ignore: <id>` plus a project-record exception for `ast-grep::<id>`.
+Keep project rule ids out of the `rqaci.` namespace.
 
 Every rule identifier needs a document `<docs_dir>/<id>.md` (`::` becomes `.`) whose sections say what
 it flags, why, and how to fix correctly. `rust-qa docs-check` enforces this.
@@ -80,7 +96,8 @@ Exceptions that match nothing are reported as stale.
 ```toml
 record = "qa/record.toml"
 docs_dir = "docs/defences"
-scan_exclude = []            # globs; target/ and .git/ are always skipped
+scan_exclude = []            # globs excluded from the suppression scan and the bundled ast-grep
+                             # pack; target/ and .git/ are always skipped
 
 [summary]
 # file = "AGENTS.md"         # agent-loaded file that receives the generated region; unset = off
@@ -101,6 +118,9 @@ test = true
 coverage = true
 mutants = true
 
+[ast_grep]
+bundled = true               # run the bundled rqaci.ast.* pack beside the project's own rules
+
 [coverage]
 fail_under_lines = 80
 
@@ -109,8 +129,8 @@ mode = "off"                 # off | diff | full
 base = "origin/main"         # diff mode compares against the merge base with this ref
 ```
 
-A tool whose own configuration is absent (no `sgconfig.yml`, no dylint metadata, no `deny.toml`)
-reports itself as skipped.
+A tool whose own configuration is absent (no dylint metadata, no `deny.toml`; for ast-grep, no
+`sgconfig.yml` and the bundled pack off) reports itself as skipped.
 
 ## Installing
 

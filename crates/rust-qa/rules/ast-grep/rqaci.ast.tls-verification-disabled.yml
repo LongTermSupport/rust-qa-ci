@@ -1,0 +1,17 @@
+id: rqaci.ast.tls-verification-disabled
+language: rust
+severity: error
+message: TLS certificate or hostname verification is switched off; trust the specific certificate instead
+note: "rust-qa rule-doc rqaci.ast.tls-verification-disabled"
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: field_expression
+        has:
+          field: field
+          regex: ^danger_accept_invalid_(certs|hostnames)$
+    - has:
+        field: arguments
+        regex: ^\(\s*true\s*\)$
