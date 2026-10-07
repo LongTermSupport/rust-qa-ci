@@ -21,6 +21,10 @@ cargo test                               # UI tests in ui/ and ui_config/
 cargo clippy --all-targets -- -D warnings
 ```
 
+The package version is the rust-qa-ci release version (enforced by a test in `crates/rust-qa`):
+Dylint caches a library build by name and version, not by git tag, so an unchanged version would
+leave consumers on the old build after they bump their pin.
+
 Each lint keeps red-proof UI fixtures: a `.rs` file under `ui/` with the expected diagnostics
 in the matching `.stderr` file. `ui_config/` holds fixtures run with a non-default
 `dylint.toml`.

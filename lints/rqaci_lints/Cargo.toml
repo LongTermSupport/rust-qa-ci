@@ -1,6 +1,6 @@
 [package]
 name = "rqaci_lints"
-version = "0.1.0"
+version = "0.3.1"
 authors = ["rust-qa-ci contributors"]
 description = "Type-aware Dylint lints bundled with rust-qa-ci"
 edition = "2024"

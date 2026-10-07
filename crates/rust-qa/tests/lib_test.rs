@@ -10,6 +10,21 @@ fn failure_pointer_names_the_method_and_links_it() {
     assert!(DBF_POINTER.contains("rust-qa rule-doc"));
 }
 
+/// Dylint caches a library build by package name and version, not by git tag, so a release that
+/// keeps the bundled library's version would leave consumers running the previous build after
+/// they bump their pin.
+#[test]
+fn bundled_lint_library_version_tracks_the_release() {
+    let manifest =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lints/rqaci_lints/Cargo.toml");
+    let library = read_toml::<toml::Value>(&manifest).unwrap();
+    let version = library
+        .get("package")
+        .and_then(|package| package.get("version"))
+        .and_then(toml::Value::as_str);
+    assert_eq!(version, Some(env!("CARGO_PKG_VERSION")));
+}
+
 #[test]
 fn read_toml_reports_the_failing_path() {
     let dir = tempfile::tempdir().unwrap();
