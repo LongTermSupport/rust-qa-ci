@@ -1,0 +1,27 @@
+# rust-qa-ci's own project record. Every suppression in this repository must match an entry here
+# (README.md, "Project record").
+
+[[exception]]
+rule = "clippy.toml::allow-unwrap-in-tests"
+path = "clippy.toml"
+justification = "Tests report failure by panicking; unwrap in test code gives the failing call site, while production code still denies clippy::unwrap_used."
+
+[[exception]]
+rule = "clippy.toml::allow-expect-in-tests"
+path = "clippy.toml"
+justification = "Tests report failure by panicking; expect messages make test failures readable, while production code still denies clippy::expect_used."
+
+[[exception]]
+rule = "clippy.toml::allow-panic-in-tests"
+path = "clippy.toml"
+justification = "Test doubles may panic on calls a test never expects; production code still denies clippy::panic."
+
+[[exception]]
+rule = "clippy.toml::allow-indexing-slicing-in-tests"
+path = "clippy.toml"
+justification = "Tests index fixture vectors whose length the same test asserts first; production code still denies clippy::indexing_slicing."
+
+[[exception]]
+rule = "clippy::struct_excessive_bools"
+path = "crates/rust-qa/src/config.rs"
+justification = "The tool switch table mirrors the configuration file one key per tool; an enum set would make the TOML schema harder to read and validate."

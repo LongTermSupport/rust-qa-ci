@@ -1,0 +1,317 @@
+//! `rust-qa` command line.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+
+use clap::{Parser, Subcommand};
+use rust_qa::config::Config;
+use rust_qa::defences::{dylint_lints, enumerate};
+use rust_qa::docs::Resolver;
+use rust_qa::finding::Finding;
+use rust_qa::pipeline::{Outcome, execute};
+use rust_qa::record::Record;
+use rust_qa::tools::{Context, RealExecutor, Tool, render_summary, select};
+use rust_qa::{DBF_POINTER, Error, builtin, summary};
+
+/// One QA entry point for a Rust workspace: format, detectors, then runners.
+#[derive(Debug, Parser)]
+#[command(name = "rust-qa", version)]
+struct Cli {
+    /// Workspace root (default: the enclosing Cargo workspace).
+    #[arg(long, global = true)]
+    root: Option<PathBuf>,
+    /// Configuration file relative to the root (default: qa/rust-qa.toml when present).
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum Cmd {
+    /// Run the gate: format, detectors, runners. A detector failure stops before any runner.
+    Run {
+        /// Run only these tools (repeatable); see `rust-qa tools`.
+        #[arg(short = 't', long = "tool")]
+        tools: Vec<String>,
+        /// Limit to these files or directories (repeatable).
+        #[arg(short = 'p', long = "path")]
+        paths: Vec<PathBuf>,
+        /// CI mode: autofix, then fail if the working tree changed (default when `CI` is set).
+        #[arg(long)]
+        ci: bool,
+        /// Never modify files (formatting checks only).
+        #[arg(long)]
+        no_fix: bool,
+        /// Stop at the first failing tool.
+        #[arg(long)]
+        fail_fast: bool,
+    },
+    /// List the tool catalogue with phases and whether each is enabled.
+    Tools,
+    /// List every active defence and the project record, without running anything.
+    Rules {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the documentation for a rule identifier (offline).
+    RuleDoc {
+        /// Identifier exactly as printed by a defence.
+        id: String,
+    },
+    /// Fail if any listed defence identifier has no documentation.
+    DocsCheck,
+    /// Project record commands.
+    Record {
+        #[command(subcommand)]
+        action: RecordAction,
+    },
+    /// Regenerate the agent summary region (or check it with --check).
+    Summary {
+        /// Fail instead of writing when the region is stale.
+        #[arg(long)]
+        check: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RecordAction {
+    /// Validate every exception.
+    Check,
+    /// List exceptions.
+    List,
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match dispatch(cli) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::from(1),
+        Err(error) => {
+            eprintln!("rust-qa: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn dispatch(cli: Cli) -> Result<bool, Error> {
+    let root = match cli.root {
+        Some(root) => root,
+        None => discover_root()?,
+    };
+    let root = std::fs::canonicalize(&root).map_err(|source| Error::Read { path: root, source })?;
+    let config = Config::load(&root, cli.config.as_deref())?;
+    match cli.command {
+        Cmd::Run {
+            tools,
+            paths,
+            ci,
+            no_fix,
+            fail_fast,
+        } => {
+            let ci = ci || std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
+            run(&root, config, &tools, &paths, ci, !no_fix, fail_fast)
+        }
+        Cmd::Tools => {
+            for tool in Tool::ALL {
+                let state = if tool.enabled(&config) { "enabled" } else { "disabled" };
+                println!("{:<12} {:<10} {state}", tool.name(), tool.phase().name());
+            }
+            Ok(true)
+        }
+        Cmd::Rules { json } => rules(&root, &config, json),
+        Cmd::RuleDoc { id } => {
+            let resolver = Resolver::new(&root, &config.docs_dir);
+            let Some(doc) = resolver.resolve(&id)? else {
+                println!("no documentation for `{id}` (dangling identifier)");
+                return Ok(false);
+            };
+            println!("{}", doc.text);
+            eprintln!("(source: {:?})", doc.source);
+            Ok(true)
+        }
+        Cmd::DocsCheck => docs_check(&root, &config),
+        Cmd::Record { action } => {
+            let record = Record::load(&root.join(&config.record))?;
+            match action {
+                RecordAction::Check => {
+                    let findings = record.validate(&config.record);
+                    print_findings(&findings);
+                    Ok(findings.is_empty())
+                }
+                RecordAction::List => {
+                    print_record(&record);
+                    Ok(true)
+                }
+            }
+        }
+        Cmd::Summary { check } => {
+            let Some(file) = config.summary.file.clone() else {
+                return Err(Error::Usage("no [summary] file configured in qa/rust-qa.toml".to_owned()));
+            };
+            let path = root.join(&file);
+            let existing = if path.exists() {
+                rust_qa::read_to_string(&path)?
+            } else {
+                String::new()
+            };
+            let updated = summary::splice(&existing, &render_summary(&root, &config, dylint_lints)?);
+            if updated == existing {
+                return Ok(true);
+            }
+            if check {
+                print_findings(&[Finding {
+                    rule: builtin::SUMMARY_STALE,
+                    path: file,
+                    line: 0,
+                    message: "generated defence summary is out of date; run `rust-qa summary`".to_owned(),
+                }]);
+                return Ok(false);
+            }
+            std::fs::write(&path, updated).map_err(|source| Error::Write { path, source })?;
+            Ok(true)
+        }
+    }
+}
+
+fn discover_root() -> Result<PathBuf, Error> {
+    let output = Command::new("cargo")
+        .args(["locate-project", "--workspace", "--message-format", "plain"])
+        .output()
+        .map_err(|e| Error::Command {
+            command: "cargo locate-project".to_owned(),
+            message: e.to_string(),
+        })?;
+    let manifest = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    match manifest.parent() {
+        Some(dir) if output.status.success() => Ok(dir.to_path_buf()),
+        _ => std::env::current_dir().map_err(|source| Error::Read {
+            path: PathBuf::from("."),
+            source,
+        }),
+    }
+}
+
+fn run(
+    root: &Path,
+    config: Config,
+    tools: &[String],
+    paths: &[PathBuf],
+    ci: bool,
+    fix: bool,
+    fail_fast: bool,
+) -> Result<bool, Error> {
+    let selected = select(tools, &config)?;
+    let scope = paths
+        .iter()
+        .map(|path| relative_to_root(root, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ctx = Context::discover(root, config, scope, ci, fix)?;
+    let mut executor = RealExecutor {
+        ctx,
+        dylint_lister: dylint_lints,
+    };
+    let report = execute(&selected, &mut executor, fail_fast);
+    println!("\nrust-qa summary:");
+    for (tool, outcome) in &report.results {
+        let text = match outcome {
+            Outcome::Passed => "passed".to_owned(),
+            Outcome::Failed => "FAILED".to_owned(),
+            Outcome::Skipped(reason) => format!("skipped ({reason})"),
+        };
+        println!("  {:<10} {:<12} {text}", tool.phase().name(), tool.name());
+    }
+    if report.stopped_before_runners {
+        println!("detectors failed: runners were not started");
+    }
+    if !report.passed {
+        println!("\n{DBF_POINTER}");
+    }
+    Ok(report.passed)
+}
+
+fn relative_to_root(root: &Path, path: &Path) -> Result<PathBuf, Error> {
+    let absolute = std::fs::canonicalize(path).map_err(|source| Error::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    absolute
+        .strip_prefix(root)
+        .map(Path::to_path_buf)
+        .map_err(|_| Error::Usage(format!("{} is outside the workspace {}", path.display(), root.display())))
+}
+
+fn rules(root: &Path, config: &Config, json: bool) -> Result<bool, Error> {
+    let defences = enumerate(root, config, &dylint_lints)?;
+    let record = Record::load(&root.join(&config.record))?;
+    if json {
+        let value = serde_json::json!({
+            "defences": defences.iter().map(|d| serde_json::json!({
+                "id": d.id, "engine": d.engine.name(), "level": d.level, "origin": d.origin,
+                "doc": format!("rust-qa rule-doc {}", d.id),
+            })).collect::<Vec<_>>(),
+            "record": record.exceptions.iter().map(|e| serde_json::json!({
+                "rule": e.rule, "path": e.path, "justification": e.justification, "decided_by": e.decided_by,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{value:#}");
+        return Ok(true);
+    }
+    println!("Active defences (derived from configuration; resolve with `rust-qa rule-doc <id>`):");
+    for defence in &defences {
+        println!(
+            "  {:<40} {:<9} {:<36} {}",
+            defence.id,
+            defence.engine.name(),
+            defence.level,
+            defence.origin
+        );
+    }
+    println!();
+    print_record(&record);
+    Ok(true)
+}
+
+fn print_record(record: &Record) {
+    println!("Project record ({} exception(s)):", record.exceptions.len());
+    for exception in &record.exceptions {
+        println!(
+            "  {:<40} {:<36} {}",
+            exception.rule,
+            exception.path,
+            exception.justification
+        );
+    }
+}
+
+fn docs_check(root: &Path, config: &Config) -> Result<bool, Error> {
+    let resolver = Resolver::new(root, &config.docs_dir);
+    let mut ids: Vec<String> = enumerate(root, config, &dylint_lints)?
+        .into_iter()
+        .map(|d| d.id)
+        .collect();
+    ids.extend(builtin::ALL.iter().map(|id| (*id).to_owned()));
+    ids.sort();
+    ids.dedup();
+    let mut dangling = Vec::new();
+    for id in &ids {
+        if resolver.resolve(id)?.is_none() {
+            dangling.push(id.clone());
+        }
+    }
+    for id in &dangling {
+        println!("dangling identifier: `{id}` has no documentation (add {})", config.docs_dir.join(rust_qa::docs::doc_file_name(id)).display());
+    }
+    println!("{} identifier(s) checked, {} dangling", ids.len(), dangling.len());
+    Ok(dangling.is_empty())
+}
+
+fn print_findings(findings: &[Finding]) {
+    for finding in findings {
+        println!("{finding}");
+    }
+    if !findings.is_empty() {
+        println!("\n{DBF_POINTER}");
+    }
+}

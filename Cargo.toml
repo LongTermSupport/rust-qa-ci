@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = ["crates/rust-qa"]
+exclude = ["lints"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+repository = "https://github.com/LongTermSupport/rust-qa-ci"
+
+[workspace.metadata.dylint]
+libraries = [{ path = "lints/rqaci_lints" }]
+
+# Defence Before Fix conformance declaration (https://defence-before-fix.github.io/).
+# Partial: the gap record lists every MUST not yet evidenced. Detail: docs/CONFORMANCE.md.
+[workspace.metadata.defence-before-fix]
+method-version = "1.1.0"
+detector-spec-version = "1.0.0"
+toolchain-spec-version = "0.2.0"
+level = "partial"
+gaps = [
+    "4.1: Clippy is routed through a wrapper (per-file filtering, offline docs via `cargo clippy --explain`); bespoke rules are authored with dylint, not Clippy itself",
+    "4.2: rustc lint docs resolve from the rust-docs component when installed, otherwise only the one-line `rustc -W help` description",
+    "4.4: per-crate engines (Clippy, dylint) analyse the owning crate and filter output to the requested file",
+    "8: release gates run as tests and the self-gate; no tagged-release automation yet",
+]
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+globset = "0.4"
+ignore = "0.4"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syn = { version = "2", features = ["full", "visit", "parsing"] }
+tempfile = "3"
+thiserror = "2"
+toml = { version = "0.9", features = ["preserve_order"] }
+yaml-rust2 = "0.10"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"

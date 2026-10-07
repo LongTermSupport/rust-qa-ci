@@ -1,0 +1,11 @@
+# rust-qa-ci gates its own source with its own entry point (release gate: the toolchain runs its own
+# defences on its own source). Keys and defaults: README.md, "Configuration".
+
+# dylint UI fixtures contain deliberate violations; they are proven by the lint library's own tests.
+scan_exclude = ["lints/*/ui/*", "lints/*/ui_*/*"]
+
+[coverage]
+fail_under_lines = 80
+
+[mutants]
+mode = "off"
