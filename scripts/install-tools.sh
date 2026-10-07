@@ -1,14 +1,39 @@
 #!/usr/bin/env bash
 # Installs the external QA tools at the versions pinned in tools.lock.
 #
-# Usage: scripts/install-tools.sh [--check]
+# Usage: scripts/install-tools.sh [--check] [tool...]
 #   --check  only report missing or mismatched tools; exit 1 if any.
+#   tool...  limit to these tools (for example `ast-grep` in CI); the [bootstrap] tools are always
+#            included because the others are installed through them.
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 lock="${repo_dir}/tools.lock"
 check_only=0
-[[ "${1:-}" == "--check" ]] && check_only=1
+if [[ "${1:-}" == "--check" ]]; then
+    check_only=1
+    shift
+fi
+selected=("$@")
+
+# True when the tool is selected (no selection means every tool) or a bootstrap tool.
+wanted() {
+    local section="$1" name="$2" choice
+    if [[ "${section}" == "bootstrap" || ${#selected[@]} -eq 0 ]]; then
+        return 0
+    fi
+    for choice in "${selected[@]}"; do
+        [[ "${choice}" == "${name}" ]] && return 0
+    done
+    return 1
+}
+
+for choice in "${selected[@]}"; do
+    if ! grep -qE "^${choice} = " "${lock}"; then
+        echo "install-tools: ${choice} is not pinned in tools.lock" >&2
+        exit 2
+    fi
+done
 
 # Prints "section name version" for every pinned tool.
 pins() {
@@ -40,6 +65,7 @@ ensure_binstall() {
 
 missing=0
 while read -r section name version; do
+    wanted "${section}" "${name}" || continue
     current="$(installed_version "${name}")"
     if [[ "${current}" == "${version}" ]]; then
         echo "ok        ${name} ${version}"

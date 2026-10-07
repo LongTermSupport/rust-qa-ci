@@ -26,6 +26,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The bundled ast-grep pack's red-proof tests run the pinned ast-grep binary.
+      - name: Install ast-grep (version from tools.lock)
+        run: scripts/install-tools.sh ast-grep
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
