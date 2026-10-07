@@ -113,6 +113,22 @@ fn docs_check_fails_on_a_dangling_project_rule() {
 }
 
 #[test]
+fn docs_detector_blocks_the_gate_on_a_dangling_identifier() {
+    let dir = fixture();
+    write(dir.path(), "sgconfig.yml", "ruleDirs:\n  - rules\n");
+    write(
+        dir.path(),
+        "rules/r.yml",
+        "id: undocumented-rule\nlanguage: rust\nseverity: error\nrule:\n  pattern: x\n",
+    );
+    let output = rust_qa(dir.path(), &["run", "-t", "docs", "-t", "test"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("undocumented-rule"));
+    assert!(text.contains("runners were not started"));
+}
+
+#[test]
 fn record_check_rejects_generic_justifications() {
     let dir = fixture();
     write(

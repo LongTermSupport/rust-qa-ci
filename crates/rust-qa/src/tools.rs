@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::config::{Config, MutantsMode};
 use crate::defences::{DylintLint, enumerate};
-use crate::diagnostics::{in_scope, parse_cargo_messages};
+use crate::diagnostics::{dedupe, in_scope, parse_cargo_messages};
 use crate::finding::Finding;
 use crate::manifest::has_dylint_metadata;
 use crate::pipeline::{Executor, Outcome, Phase};
@@ -25,6 +25,8 @@ pub enum Tool {
     Suppression,
     /// Agent summary freshness.
     Summary,
+    /// Every listed identifier resolves to documentation.
+    Docs,
     /// ast-grep supplementary syntactic rules.
     AstGrep,
     /// Clippy with `-D warnings`.
@@ -47,11 +49,12 @@ pub enum Tool {
 
 impl Tool {
     /// The catalogue in execution order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Fmt,
         Self::Record,
         Self::Suppression,
         Self::Summary,
+        Self::Docs,
         Self::AstGrep,
         Self::Clippy,
         Self::Dylint,
@@ -71,6 +74,7 @@ impl Tool {
             Self::Record => "record",
             Self::Suppression => "suppression",
             Self::Summary => "summary",
+            Self::Docs => "docs",
             Self::AstGrep => "ast-grep",
             Self::Clippy => "clippy",
             Self::Dylint => "dylint",
@@ -97,6 +101,7 @@ impl Tool {
             Self::Record
             | Self::Suppression
             | Self::Summary
+            | Self::Docs
             | Self::AstGrep
             | Self::Clippy
             | Self::Dylint => Phase::Detectors,
@@ -118,6 +123,7 @@ impl Tool {
             Self::Record => tools.record,
             Self::Suppression => tools.suppression,
             Self::Summary => tools.summary,
+            Self::Docs => tools.docs,
             Self::AstGrep => tools.ast_grep,
             Self::Clippy => tools.clippy,
             Self::Dylint => tools.dylint,
@@ -408,7 +414,7 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
                 &["mutants", "--workspace", "--in-diff", MUTANTS_DIFF],
             )],
         },
-        Tool::Record | Tool::Suppression | Tool::Summary => Vec::new(),
+        Tool::Record | Tool::Suppression | Tool::Summary | Tool::Docs => Vec::new(),
     }
 }
 
@@ -456,6 +462,7 @@ impl RealExecutor {
             Tool::Record => Ok(self.record()),
             Tool::Suppression => self.suppression(),
             Tool::Summary => self.summary(),
+            Tool::Docs => self.docs(),
             Tool::AstGrep if !root.join("sgconfig.yml").is_file() => {
                 Ok(Outcome::Skipped("no sgconfig.yml".to_owned()))
             }
@@ -554,6 +561,22 @@ impl RealExecutor {
         }]))
     }
 
+    fn docs(&self) -> Result<Outcome, Error> {
+        let ctx = &self.ctx;
+        let (ids, missing) = crate::docs::dangling(&ctx.root, &ctx.config, &self.dylint_lister)?;
+        println!("    {} identifier(s) checked", ids.len());
+        let findings: Vec<Finding> = missing
+            .into_iter()
+            .map(|id| Finding {
+                rule: builtin::DOCS_DANGLING,
+                path: ctx.config.docs_dir.join(crate::docs::doc_file_name(&id)),
+                line: 0,
+                message: format!("`{id}` has no documentation"),
+            })
+            .collect();
+        Ok(Self::report(&findings))
+    }
+
     fn commands(&self, tool: Tool) -> Result<Outcome, Error> {
         for cmd in plan(tool, &self.ctx) {
             println!("$ {}", cmd.display());
@@ -582,7 +605,9 @@ impl RealExecutor {
                 .output()
                 .map_err(|e| missing_tool(&cmd, &e))?;
             build_failed |= !output.status.success();
-            for diagnostic in parse_cargo_messages(&String::from_utf8_lossy(&output.stdout)) {
+            for diagnostic in dedupe(parse_cargo_messages(&String::from_utf8_lossy(
+                &output.stdout,
+            ))) {
                 if !in_scope(&diagnostic, &ctx.root, &ctx.scope) {
                     continue;
                 }

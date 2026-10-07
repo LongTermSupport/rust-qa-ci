@@ -12,10 +12,14 @@ pub const SUPPRESSION_UNRECORDED: &str = "rqaci.suppression.unrecorded";
 /// The generated agent summary region is out of date.
 pub const SUMMARY_STALE: &str = "rqaci.summary.stale";
 
+/// A listed defence identifier has no resolvable documentation.
+pub const DOCS_DANGLING: &str = "rqaci.docs.dangling";
+
 /// Every built-in identifier, for listing and documentation checks.
-pub const ALL: [&str; 4] = [
+pub const ALL: [&str; 5] = [
     RECORD_INVALID,
     RECORD_STALE,
     SUPPRESSION_UNRECORDED,
     SUMMARY_STALE,
+    DOCS_DANGLING,
 ];

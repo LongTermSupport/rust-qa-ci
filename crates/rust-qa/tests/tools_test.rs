@@ -16,6 +16,11 @@ fn catalogue_is_ordered_format_then_detectors_then_runners() {
     assert_eq!(Tool::ALL.first().map(|t| t.phase()), Some(Phase::Format));
     assert_eq!(Tool::Clippy.phase(), Phase::Detectors);
     assert_eq!(Tool::Dylint.phase(), Phase::Detectors);
+    assert_eq!(Tool::Docs.phase(), Phase::Detectors);
+    assert!(
+        Tool::Docs < Tool::Clippy,
+        "docs is checked before the compiler-backed detectors"
+    );
     assert_eq!(Tool::Deny.phase(), Phase::Runners);
     assert_eq!(Tool::Test.phase(), Phase::Runners);
 }

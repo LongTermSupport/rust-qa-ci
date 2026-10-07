@@ -71,5 +71,23 @@ LL |     Basic { user: String, token: K },
    = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
    = help: implement `Debug` by hand and redact the field
 
-error: aborting due to 8 previous errors
+error: derived `Debug` would print the contents of sensitive type `MixedToken`
+  --> $DIR/main.rs:132:1
+   |
+LL | pub struct MixedToken {
+   | ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `MixedToken` matches the sensitive type pattern `Token`
+   = help: implement `Debug` by hand and redact the contents
+
+error: derived `Debug` would print sensitive field `token` of type `MixedToken`
+  --> $DIR/main.rs:139:5
+   |
+LL |     pub token: MixedToken,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `MixedToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: aborting due to 10 previous errors
 

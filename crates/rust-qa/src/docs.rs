@@ -39,6 +39,10 @@ static BUNDLED: &[(&str, &str)] = &[
         include_str!("../docs/rules/clippy.restriction.md"),
     ),
     (
+        "rqaci.docs.dangling",
+        include_str!("../docs/rules/rqaci.docs.dangling.md"),
+    ),
+    (
         "rqaci.record.invalid",
         include_str!("../docs/rules/rqaci.record.invalid.md"),
     ),
@@ -60,6 +64,33 @@ static BUNDLED: &[(&str, &str)] = &[
     ),
     ("warnings", include_str!("../docs/rules/warnings.md")),
 ];
+
+/// Identifiers that must resolve (every listed defence plus the built-ins), sorted, and those that
+/// do not.
+///
+/// # Errors
+/// Returns an error when defences cannot be enumerated or a project document cannot be read.
+pub fn dangling(
+    root: &Path,
+    config: &crate::config::Config,
+    dylint: &dyn Fn(&Path) -> Result<Vec<crate::defences::DylintLint>, Error>,
+) -> Result<(Vec<String>, Vec<String>), Error> {
+    let resolver = Resolver::new(root, &config.docs_dir);
+    let mut ids: Vec<String> = crate::defences::enumerate(root, config, dylint)?
+        .into_iter()
+        .map(|d| d.id)
+        .collect();
+    ids.extend(crate::builtin::ALL.iter().map(|id| (*id).to_owned()));
+    ids.sort();
+    ids.dedup();
+    let mut missing = Vec::new();
+    for id in &ids {
+        if resolver.resolve(id)?.is_none() {
+            missing.push(id.clone());
+        }
+    }
+    Ok((ids, missing))
+}
 
 /// Bundled document for `id`, if any.
 #[must_use]

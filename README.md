@@ -19,6 +19,7 @@ all static findings; any format or detector failure stops the run before the fir
 | detectors | `record` | project record validation (`rqaci.record.invalid`) |
 | | `suppression` | unrecorded suppressions (`rqaci.suppression.unrecorded`, `rqaci.record.stale`) |
 | | `summary` | agent summary freshness (`rqaci.summary.stale`) |
+| | `docs` | every listed identifier resolves to documentation (`rqaci.docs.dangling`) |
 | | `ast-grep` | supplementary syntactic rules from `sgconfig.yml` |
 | | `clippy` | Clippy with `-D warnings` and the Cargo `[lints]` tables |
 | | `dylint` | type-aware rule libraries from `[workspace.metadata.dylint]` |
@@ -89,6 +90,7 @@ fmt = true
 record = true
 suppression = true
 summary = true
+docs = true
 ast_grep = true
 clippy = true
 dylint = true
@@ -115,8 +117,8 @@ reports itself as skipped.
 Pin an exact tag. Install the binary and the pinned external tools:
 
 ```bash
-cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.1.0 rust-qa
-git clone --depth 1 --branch v0.1.0 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
+cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.1.1 rust-qa
+git clone --depth 1 --branch v0.1.1 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
 /tmp/rust-qa-ci/scripts/install-tools.sh            # versions from tools.lock
 ```
 
@@ -125,7 +127,7 @@ Bundled type-aware rules load from the same tag:
 ```toml
 [workspace.metadata.dylint]
 libraries = [
-    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.1.0", pattern = "lints/rqaci_lints" },
+    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.1.1", pattern = "lints/rqaci_lints" },
 ]
 ```
 

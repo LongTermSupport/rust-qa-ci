@@ -5,6 +5,7 @@
 use clippy_utils::diagnostics::span_lint_hir_and_then;
 use rustc_hir::{Item, ItemKind};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::{self, AdtDef, AdtKind, Ty, TyCtxt};
 use rustc_span::def_id::DefId;
 use rustc_span::{Symbol, sym};
@@ -16,7 +17,8 @@ rustc_session::declare_lint! {
     /// Flags `#[derive(Debug)]` on a local struct or enum that would print a sensitive value:
     /// either the type's own name matches a sensitive pattern and it holds data, or one of its
     /// fields resolves (through aliases, references, tuples, arrays and generic arguments such
-    /// as `Option<Vec<_>>`) to a sensitive type whose own `Debug` is also derived.
+    /// as `Option<Vec<_>>`) to a sensitive type whose own `Debug` is also derived. Fields that
+    /// are configured redacting types (default: `secrecy::SecretBox`) do not count as data.
     ///
     /// ### Why is this bad?
     ///
@@ -51,17 +53,27 @@ const DEFAULT_PATTERNS: [&str; 7] = [
     "PrivateKey",
 ];
 
+/// `SecretString` is an alias of `SecretBox<str>`; the alias is listed for readers, the resolved
+/// `SecretBox` entry is what matches.
+const DEFAULT_REDACTING_TYPES: [&str; 2] = ["secrecy::SecretBox", "secrecy::SecretString"];
+
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Config {
     /// Case-insensitive substrings matched against a type's simple name. Replaces the defaults.
     sensitive_type_patterns: Vec<String>,
+    /// Def paths of types whose `Debug` redacts. Replaces the defaults.
+    redacting_types: Vec<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             sensitive_type_patterns: DEFAULT_PATTERNS.iter().map(ToString::to_string).collect(),
+            redacting_types: DEFAULT_REDACTING_TYPES
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         }
     }
 }
@@ -73,6 +85,7 @@ struct Pattern {
 
 pub struct SensitiveDebugDerive {
     patterns: Vec<Pattern>,
+    redacting_types: Vec<String>,
 }
 
 impl SensitiveDebugDerive {
@@ -87,7 +100,43 @@ impl SensitiveDebugDerive {
                 configured,
             })
             .collect();
-        Self { patterns }
+        Self {
+            patterns,
+            redacting_types: config.redacting_types,
+        }
+    }
+
+    /// A configured entry matches the full def path or a suffix of it on a `::` boundary, so
+    /// `secrecy::SecretBox` also matches a crate-local `crate::secrecy::SecretBox`.
+    fn is_redacting_adt(&self, tcx: TyCtxt<'_>, did: DefId) -> bool {
+        let path = with_no_trimmed_paths!(tcx.def_path_str(did));
+        self.redacting_types.iter().any(|configured| {
+            path == *configured
+                || path
+                    .strip_suffix(configured.as_str())
+                    .is_some_and(|prefix| prefix.ends_with("::"))
+        })
+    }
+
+    /// Whether `Debug` on `ty` can only print redacted output: a redacting type, possibly behind
+    /// references, arrays, slices, tuples, `Box`, `Option`, `Vec`, `Rc` or `Arc`.
+    fn prints_only_redacted<'tcx>(&self, tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
+        match ty.kind() {
+            ty::Adt(adt, _) if self.is_redacting_adt(tcx, adt.did()) => true,
+            ty::Adt(adt, args) if adt.is_box() || is_transparent_container(tcx, adt.did()) => {
+                self.prints_only_redacted(tcx, args.type_at(0))
+            }
+            ty::Ref(_, inner, _) | ty::Array(inner, _) | ty::Slice(inner) => {
+                self.prints_only_redacted(tcx, *inner)
+            }
+            ty::Tuple(elems) => {
+                !elems.is_empty()
+                    && elems
+                        .iter()
+                        .all(|elem| self.prints_only_redacted(tcx, elem))
+            }
+            _ => false,
+        }
     }
 
     fn matching_pattern(&self, type_name: Symbol) -> Option<&str> {
@@ -98,11 +147,18 @@ impl SensitiveDebugDerive {
             .map(|pattern| pattern.configured.as_str())
     }
 
-    /// Sensitive and printable: the name matches, it holds data, and its `Debug` is derived.
-    /// A hand-written `Debug` is trusted to redact, which is the fix this lint asks for.
+    /// Sensitive and printable: the name matches, its `Debug` is derived, and it holds at least
+    /// one field that is not a redacting type. A hand-written `Debug` is trusted to redact, which
+    /// is the fix this lint asks for.
     fn leaks_through_debug(&self, tcx: TyCtxt<'_>, debug: DefId, adt: AdtDef<'_>) -> Option<&str> {
         let pattern = self.matching_pattern(tcx.item_name(adt.did()))?;
-        let holds_data = adt.all_fields().next().is_some();
+        let prints_clear_data = adt.all_fields().any(|field| {
+            let field_ty = tcx
+                .type_of(field.did)
+                .instantiate_identity()
+                .skip_norm_wip();
+            !self.prints_only_redacted(tcx, field_ty)
+        });
         let adt_ty = tcx
             .type_of(adt.did())
             .instantiate_identity()
@@ -110,7 +166,7 @@ impl SensitiveDebugDerive {
         let derived = tcx
             .non_blanket_impls_for_ty(debug, adt_ty)
             .any(|impl_id| tcx.is_automatically_derived(impl_id));
-        (holds_data && derived).then_some(pattern)
+        (prints_clear_data && derived).then_some(pattern)
     }
 
     /// First sensitive type reachable from `ty` through its generic arguments.
@@ -128,6 +184,13 @@ impl SensitiveDebugDerive {
                 .map(|pattern| (inner, pattern))
         })
     }
+}
+
+/// Std containers whose derived-style `Debug` prints only their element type's `Debug`.
+fn is_transparent_container(tcx: TyCtxt<'_>, did: DefId) -> bool {
+    [sym::Option, sym::Vec, sym::Rc, sym::Arc]
+        .into_iter()
+        .any(|item| tcx.is_diagnostic_item(item, did))
 }
 
 impl<'tcx> LateLintPass<'tcx> for SensitiveDebugDerive {

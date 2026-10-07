@@ -124,6 +124,14 @@ pub fn enumerate(
             "rust-qa summary",
         );
     }
+    if tools.docs {
+        out.push(
+            builtin::DOCS_DANGLING,
+            Engine::Builtin,
+            "deny",
+            "rust-qa docs",
+        );
+    }
     if tools.clippy {
         out.push(
             "warnings",

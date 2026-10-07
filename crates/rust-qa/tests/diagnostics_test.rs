@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rust_qa::diagnostics::{Diagnostic, in_scope, parse_cargo_messages};
+use rust_qa::diagnostics::{Diagnostic, dedupe, in_scope, parse_cargo_messages};
 
 fn message(code: &str, level: &str, file: &str) -> String {
     serde_json::json!({
@@ -72,6 +72,16 @@ fn absolute_span_paths_are_made_relative_to_the_root() {
         Path::new("/ws"),
         &[PathBuf::from("crates/a")]
     ));
+}
+
+#[test]
+fn identical_diagnostics_from_several_targets_are_reported_once() {
+    let one = message("example_rule", "error", "src/lib.rs");
+    let other = message("example_rule", "error", "src/main.rs");
+    let stream = format!("{one}\n{one}\n{other}\n");
+    let diags = dedupe(parse_cargo_messages(&stream));
+    assert_eq!(diags.len(), 2);
+    assert_eq!(diags[1].files, vec![PathBuf::from("src/main.rs")]);
 }
 
 #[test]

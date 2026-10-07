@@ -301,20 +301,7 @@ fn print_record(record: &Record) {
 }
 
 fn docs_check(root: &Path, config: &Config) -> Result<bool, Error> {
-    let resolver = Resolver::new(root, &config.docs_dir);
-    let mut ids: Vec<String> = enumerate(root, config, &dylint_lints)?
-        .into_iter()
-        .map(|d| d.id)
-        .collect();
-    ids.extend(builtin::ALL.iter().map(|id| (*id).to_owned()));
-    ids.sort();
-    ids.dedup();
-    let mut dangling = Vec::new();
-    for id in &ids {
-        if resolver.resolve(id)?.is_none() {
-            dangling.push(id.clone());
-        }
-    }
+    let (ids, dangling) = rust_qa::docs::dangling(root, config, &dylint_lints)?;
     for id in &dangling {
         println!(
             "dangling identifier: `{id}` has no documentation (add {})",

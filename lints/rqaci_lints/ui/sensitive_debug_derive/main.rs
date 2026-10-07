@@ -93,3 +93,48 @@ impl fmt::Debug for Client {
 pub struct Expected {
     pub token: ApiToken,
 }
+
+// Redacting wrappers. UI fixtures cannot have dependencies, so this module stands in for the
+// `secrecy` crate; `redacting_types` entries match a suffix of the def path on `::` boundaries.
+pub mod secrecy {
+    use std::fmt;
+
+    pub struct SecretBox<T: ?Sized>(Box<T>);
+
+    impl<T: ?Sized> fmt::Debug for SecretBox<T> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("SecretBox(<redacted>)")
+        }
+    }
+
+    pub type SecretString = SecretBox<str>;
+}
+
+// Sensitive name and derived `Debug`, but every field is a redacting type: silent.
+#[derive(Debug)]
+pub struct ConsentToken(pub secrecy::SecretString);
+
+#[derive(Debug)]
+pub struct RefreshToken {
+    pub value: Option<Box<secrecy::SecretString>>,
+    pub previous: Vec<secrecy::SecretBox<[u8]>>,
+}
+
+// Embeds sensitive types whose derived `Debug` only prints redacting fields: silent.
+#[derive(Debug)]
+pub struct Grant {
+    pub consent: ConsentToken,
+    pub refresh: Option<RefreshToken>,
+}
+
+// One redacting field is not enough when another field prints in clear: fires twice.
+#[derive(Debug)]
+pub struct MixedToken {
+    pub value: secrecy::SecretString,
+    pub label: String,
+}
+
+#[derive(Debug)]
+pub struct HoldsMixed {
+    pub token: MixedToken,
+}

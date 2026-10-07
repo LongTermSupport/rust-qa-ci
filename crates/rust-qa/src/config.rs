@@ -68,6 +68,8 @@ pub struct Tools {
     pub suppression: bool,
     /// Agent summary freshness.
     pub summary: bool,
+    /// Every listed identifier resolves to documentation.
+    pub docs: bool,
     /// ast-grep supplementary syntactic rules.
     pub ast_grep: bool,
     /// Clippy at deny.
@@ -95,6 +97,7 @@ impl Default for Tools {
             record: true,
             suppression: true,
             summary: true,
+            docs: true,
             ast_grep: true,
             clippy: true,
             dylint: true,

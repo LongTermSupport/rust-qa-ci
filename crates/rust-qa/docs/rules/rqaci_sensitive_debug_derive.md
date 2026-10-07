@@ -7,8 +7,10 @@ Level: deny. Library: `rqaci_lints` (Dylint, late lint pass).
 A `#[derive(Debug)]` on a struct or enum in the crate being checked when either:
 
 - the type itself is sensitive (its simple name matches a sensitive pattern) and it holds at
-  least one field, for example `#[derive(Debug)] struct ApiToken(String);`; or
-- any field's resolved type contains a sensitive type whose own `Debug` is derived. The search
+  least one field that is not a redacting type, for example
+  `#[derive(Debug)] struct ApiToken(String);`; or
+- any field's resolved type contains a sensitive type that would itself be flagged by the
+  previous point (derived `Debug`, at least one non-redacting field). The search
   follows type aliases, references, tuples, arrays and generic arguments, so `token: ApiToken`,
   `key: K` with `type K = ApiToken;`, `tokens: Option<Vec<ApiToken>>`, `pair: (u8, &ApiToken)`
   and `batch: [Box<ApiToken>; 2]` all fire. Enum variant fields are reported as `Variant.field`.
@@ -22,6 +24,11 @@ Not flagged:
   impl is trusted to redact, which is the fix this rule asks for;
 - a sensitive-named type with no fields (for example a fieldless `enum TokenKind`), which has
   nothing to leak;
+- a sensitive-named type whose every field is a redacting type (see `redacting_types`), for
+  example `#[derive(Debug)] struct ConsentToken(secrecy::SecretString);`, and any type that
+  embeds it. A field counts as redacting through references, arrays, slices, tuples, `Box`,
+  `Option`, `Vec`, `Rc` and `Arc`, so `Option<Box<SecretString>>` qualifies; one plain field
+  (such as a `String` label) next to it makes the type fire again;
 - fields typed by a generic parameter (`struct Holder<T> { inner: T }`): the concrete type is
   unknown at the definition, and the sensitive type's own derive is reported where it is defined;
 - containers with a hand-written `Debug`.
@@ -79,6 +86,9 @@ impl fmt::Debug for Client {
 }
 ```
 
+Alternatively, hold the secret in a redacting wrapper (for example `secrecy::SecretString`) so
+every field of the sensitive type is redacting; its derived `Debug` is then safe and not flagged.
+
 Do not rename the type to dodge the pattern; the name is what tells readers it is sensitive.
 
 ## Why type-aware
@@ -96,12 +106,22 @@ In `dylint.toml` at the workspace root:
 ```toml
 [rqaci_sensitive_debug_derive]
 sensitive_type_patterns = ["Secret", "Password", "Token", "Nonce"]
+redacting_types = ["secrecy::SecretBox", "secrecy::SecretString", "vault::Sealed"]
 ```
 
-`sensitive_type_patterns` replaces the defaults; it does not extend them. Copy the defaults
-into the list to keep them. Matching is a case-insensitive substring test on the type's simple
-name, so `Token` also matches `Tokenizer`; such types are false positives handled by narrower
-patterns or a recorded suppression.
+Both keys replace their defaults; they do not extend them. Copy the defaults into a list to
+keep them.
+
+- `sensitive_type_patterns`: case-insensitive substring test on the type's simple name, so
+  `Token` also matches `Tokenizer`; such types are false positives handled by narrower
+  patterns or a recorded suppression.
+- `redacting_types` (default `["secrecy::SecretBox", "secrecy::SecretString"]`): types whose
+  `Debug` is known to redact. Each entry is compared with the compiler's def path of the
+  resolved type, and matches either the whole path or a suffix of it that starts on a `::`
+  boundary, so `secrecy::SecretBox` also matches a crate-local `mycrate::secrecy::SecretBox`
+  (but not `notsecrecy::SecretBox`). Aliases are resolved first: `SecretString` is
+  `SecretBox<str>`, so the `SecretBox` entry is the one that matches; the alias entry is kept
+  for readability. List only types whose `Debug` you have checked redacts.
 
 ## Suppression
 

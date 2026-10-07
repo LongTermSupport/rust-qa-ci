@@ -70,6 +70,19 @@ pub fn parse_cargo_messages(stream: &str) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// Drops repeats of the same diagnostic (a crate checked once per target reports each finding once per
+/// target), keeping first-seen order.
+#[must_use]
+pub fn dedupe(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    let mut seen: Vec<Diagnostic> = Vec::new();
+    for diagnostic in diagnostics {
+        if !seen.contains(&diagnostic) {
+            seen.push(diagnostic);
+        }
+    }
+    seen
+}
+
 /// Whether any primary span of `diagnostic` lies in one of the `scope` paths (relative to `root`).
 #[must_use]
 pub fn in_scope(diagnostic: &Diagnostic, root: &Path, scope: &[PathBuf]) -> bool {
