@@ -6,7 +6,8 @@ enforcement through a single command, offline rule documentation, a project reco
 exception, and an enumerable list of active defences.
 
 Status: early (0.x). Conformance is **partial**; see [docs/CONFORMANCE.md](docs/CONFORMANCE.md).
-Licence: not yet chosen; until it is, no licence is granted.
+Licence: MIT ([LICENSE](LICENSE)). Unless you state otherwise, any contribution you intentionally
+submit for inclusion is licensed under the same terms.
 
 ## What it runs
 
