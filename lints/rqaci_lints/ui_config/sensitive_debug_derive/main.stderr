@@ -1,0 +1,21 @@
+error: derived `Debug` would print the contents of sensitive type `Nonce`
+  --> $DIR/main.rs:8:1
+   |
+LL | pub struct Nonce(pub [u8; 12]);
+   | ^^^^^^^^^^^^^^^^
+   |
+   = note: `Nonce` matches the sensitive type pattern `Nonce`
+   = help: implement `Debug` by hand and redact the contents
+   = note: `#[deny(rqaci_sensitive_debug_derive)]` on by default
+
+error: derived `Debug` would print sensitive field `nonce` of type `Nonce`
+  --> $DIR/main.rs:12:5
+   |
+LL |     pub nonce: Nonce,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `Nonce` matches the sensitive type pattern `Nonce` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: aborting due to 2 previous errors
+

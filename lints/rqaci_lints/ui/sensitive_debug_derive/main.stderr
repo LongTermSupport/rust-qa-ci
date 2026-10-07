@@ -1,0 +1,75 @@
+error: derived `Debug` would print the contents of sensitive type `ApiToken`
+  --> $DIR/main.rs:7:1
+   |
+LL | pub struct ApiToken(pub String);
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token`
+   = help: implement `Debug` by hand and redact the contents
+   = note: `#[deny(rqaci_sensitive_debug_derive)]` on by default
+
+error: derived `Debug` would print sensitive field `token` of type `ApiToken`
+  --> $DIR/main.rs:30:5
+   |
+LL |     pub token: ApiToken,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: derived `Debug` would print sensitive field `key` of type `ApiToken`
+  --> $DIR/main.rs:35:5
+   |
+LL |     pub key: K,
+   |     ^^^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: derived `Debug` would print sensitive field `tokens` of type `std::option::Option<std::vec::Vec<ApiToken>>`
+  --> $DIR/main.rs:40:5
+   |
+LL |     pub tokens: Option<Vec<ApiToken>>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: derived `Debug` would print sensitive field `pair` of type `(u8, &'a ApiToken)`
+  --> $DIR/main.rs:45:5
+   |
+LL |     pub pair: (u8, &'a ApiToken),
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: derived `Debug` would print sensitive field `batch` of type `[std::boxed::Box<ApiToken>; 2]`
+  --> $DIR/main.rs:46:5
+   |
+LL |     pub batch: [Box<ApiToken>; 2],
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: derived `Debug` would print sensitive field `Bearer.0` of type `ApiToken`
+  --> $DIR/main.rs:52:12
+   |
+LL |     Bearer(ApiToken),
+   |            ^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: derived `Debug` would print sensitive field `Basic.token` of type `ApiToken`
+  --> $DIR/main.rs:53:27
+   |
+LL |     Basic { user: String, token: K },
+   |                           ^^^^^^^^
+   |
+   = note: `ApiToken` matches the sensitive type pattern `Token` and derives `Debug`
+   = help: implement `Debug` by hand and redact the field
+
+error: aborting due to 8 previous errors
+
