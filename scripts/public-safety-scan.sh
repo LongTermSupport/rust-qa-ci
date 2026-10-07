@@ -4,21 +4,27 @@
 #
 # Usage:
 #   RQACI_DENYLIST=/path/to/denylist scripts/public-safety-scan.sh [mode]
+#   (or once per clone: git config rqaci.denylist /path/to/denylist)
 # Modes:
-#   --tree           tracked files in the working tree (default)
+#   --tree           tracked files in the working tree, contents and paths (default)
 #   --staged         staged changes (pre-commit)
 #   --message FILE   a commit message file (commit-msg)
-#   --history        every commit diff and message reachable from any ref
-#   --stdin          text on standard input (issue and PR bodies before posting)
+#   --history        every ref: commit diffs, messages, author and committer identities, annotated
+#                    tag messages, notes and ref names (pre-push, CI, pre-publication audit)
+#   --stdin          text on standard input (issue and PR text before posting, CI on issue events)
 #
 # Denylist format: one extended regular expression per line, matched case-insensitively; blank
-# lines and lines starting with '#' are ignored. Output names the location and the denylist line
-# number, never the matched term, so logs do not republish what the list protects.
+# lines and lines starting with '#' are ignored. docs/denylist.example shows the format with
+# placeholder terms. Output names the location and the denylist line number, never the matched
+# term, so logs do not republish what the list protects.
 set -euo pipefail
 
 denylist="${RQACI_DENYLIST:-}"
+if [[ -z "${denylist}" ]] && configured="$(git config --get rqaci.denylist)"; then
+    denylist="${configured}"
+fi
 if [[ -z "${denylist}" || ! -r "${denylist}" ]]; then
-    echo "public-safety-scan: RQACI_DENYLIST must name a readable denylist file outside the repo" >&2
+    echo "public-safety-scan: set RQACI_DENYLIST (or git config rqaci.denylist) to a readable denylist file outside the repo" >&2
     exit 2
 fi
 repo_dir="$(git rev-parse --show-toplevel)"
@@ -28,6 +34,10 @@ case "$(cd "$(dirname "${denylist}")" && pwd)/" in
         exit 2
         ;;
 esac
+if ! grep -qvE '^[[:space:]]*(#|$)' "${denylist}"; then
+    echo "public-safety-scan: the denylist has no patterns; an empty list would pass everything" >&2
+    exit 2
+fi
 
 mode="${1:---tree}"
 work="$(mktemp -d)"
@@ -51,8 +61,10 @@ case "${mode}" in
         cp "${2:?--message needs a file}" "${text}"
         ;;
     --history)
-        git -C "${repo_dir}" log --all --no-color -p --format='commit %H%n%an%n%B' > "${text}"
-        git -C "${repo_dir}" for-each-ref --format='%(refname)' >> "${text}"
+        git -C "${repo_dir}" log --all --no-color -p \
+            --format='commit %H%nauthor %an <%ae>%ncommitter %cn <%ce>%n%B' > "${text}"
+        git -C "${repo_dir}" for-each-ref \
+            --format='ref %(refname)%0atagger %(taggername) %(taggeremail)%0a%(contents)' >> "${text}"
         ;;
     --stdin)
         cat > "${text}"

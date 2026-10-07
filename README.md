@@ -133,7 +133,19 @@ libraries = [
 
 ## Public-safety guard
 
-This repository must stay safe to publish. `scripts/public-safety-scan.sh` scans the tree, staged
-changes, commit messages, history or arbitrary text against a denylist supplied from outside the
-repository (`RQACI_DENYLIST`). Enable the hooks with `git config core.hooksPath .githooks`. The
-pre-publication audit is [docs/PUBLICATION-CHECKLIST.md](docs/PUBLICATION-CHECKLIST.md).
+This repository must stay safe to publish. Two scans guard it:
+
+- `scripts/public-safety-scan.sh` checks the tree, staged changes, commit messages, the whole history
+  (diffs, messages, identities, tag messages, ref names) or arbitrary text against a denylist
+  supplied from outside the repository (`RQACI_DENYLIST=/path` or `git config rqaci.denylist /path`).
+  The list belongs to whoever maintains a private consumer; the format is in
+  [docs/denylist.example](docs/denylist.example). Findings print a line number, never the term.
+- `scripts/secret-scan.sh` runs gitleaks over the history, staged changes or tree, with no
+  suppression route.
+
+Enable the hooks with `git config core.hooksPath .githooks`: pre-commit scans staged changes,
+commit-msg the message, pre-push the whole history. CI (`.github/workflows/public-safety.yml`) runs
+both scans on every push and pull request, weekly, and on maintainers' issue, pull request and
+comment text; it reads the denylist from the `RQACI_DENYLIST` repository secret and fails if the
+secret is missing. The pre-publication audit is
+[docs/PUBLICATION-CHECKLIST.md](docs/PUBLICATION-CHECKLIST.md).

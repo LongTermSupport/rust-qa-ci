@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The toolchain comes from rust-toolchain.toml; rustup on the runner installs it on first use.
+  rust:
+    name: Format, Clippy, tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  workflows:
+    name: Workflow and script lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint (checksum-verified)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          mkdir -p "${RUNNER_TEMP}/actionlint"
+          cd "${RUNNER_TEMP}/actionlint"
+          gh release download "v${ACTIONLINT_VERSION}" -R rhysd/actionlint \
+            -p "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" -p "actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          sha256sum -c --ignore-missing "actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          tar xzf "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" actionlint
+          echo "${PWD}" >> "${GITHUB_PATH}"
+      - run: actionlint
+      - run: shellcheck scripts/*.sh .githooks/* .github/scripts/*.sh

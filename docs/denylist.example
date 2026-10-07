@@ -1,0 +1,21 @@
+# Example denylist for scripts/public-safety-scan.sh. Placeholder terms only.
+#
+# The real list belongs to the consuming project and is kept OUTSIDE this repository, for example
+# in that project's private repository. Point the scan at it with RQACI_DENYLIST=/path/to/list or
+# `git config rqaci.denylist /path/to/list`; in CI, store its content in the RQACI_DENYLIST
+# repository secret. The scan refuses a denylist inside this repository and an empty one.
+#
+# One extended regular expression per line, matched case-insensitively. Blank lines and lines
+# starting with '#' are ignored. Findings report the line number, never the term.
+
+# Product, company and repository names
+example[ _-]?product
+example-org/private-repo
+
+# Domain vocabulary that would reveal what the consuming project does
+widget reconciliation
+
+# Internal hostnames, paths and identifiers
+internal\.example\.com
+/srv/example-workspace/
+\bTICKET-[0-9]+\b

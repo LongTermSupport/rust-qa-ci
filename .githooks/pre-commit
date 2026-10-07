@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
-# Public-safety scan of staged changes. Enable with: git config core.hooksPath .githooks
+# Public-safety and secret scans of staged changes. Enable with: git config core.hooksPath .githooks
 set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/scripts/public-safety-scan.sh" --staged
+scripts="$(git rev-parse --show-toplevel)/scripts"
+"${scripts}/public-safety-scan.sh" --staged
+"${scripts}/secret-scan.sh" --staged

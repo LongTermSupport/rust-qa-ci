@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Public-safety and secret scans of the whole history (every ref, including what is about to be
+# pushed) before anything leaves this clone. Enable with: git config core.hooksPath .githooks
+set -euo pipefail
+scripts="$(git rev-parse --show-toplevel)/scripts"
+"${scripts}/public-safety-scan.sh" --history
+"${scripts}/secret-scan.sh" --history
