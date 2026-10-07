@@ -94,10 +94,18 @@ impl Tool {
     pub fn phase(self) -> Phase {
         match self {
             Self::Fmt => Phase::Format,
-            Self::Record | Self::Suppression | Self::Summary | Self::AstGrep | Self::Clippy | Self::Dylint => {
-                Phase::Detectors
-            }
-            Self::Deny | Self::Audit | Self::Machete | Self::Test | Self::Coverage | Self::Mutants => Phase::Runners,
+            Self::Record
+            | Self::Suppression
+            | Self::Summary
+            | Self::AstGrep
+            | Self::Clippy
+            | Self::Dylint => Phase::Detectors,
+            Self::Deny
+            | Self::Audit
+            | Self::Machete
+            | Self::Test
+            | Self::Coverage
+            | Self::Mutants => Phase::Runners,
         }
     }
 
@@ -129,14 +137,20 @@ impl Tool {
 /// Returns [`Error::Usage`] for an unknown name.
 pub fn select(names: &[String], config: &Config) -> Result<Vec<Tool>, Error> {
     let mut tools = if names.is_empty() {
-        Tool::ALL.into_iter().filter(|tool| tool.enabled(config)).collect()
+        Tool::ALL
+            .into_iter()
+            .filter(|tool| tool.enabled(config))
+            .collect()
     } else {
         names
             .iter()
             .map(|name| {
                 Tool::from_name(name).ok_or_else(|| {
                     let known: Vec<&str> = Tool::ALL.iter().map(|t| t.name()).collect();
-                    Error::Usage(format!("unknown tool `{name}`; known tools: {}", known.join(", ")))
+                    Error::Usage(format!(
+                        "unknown tool `{name}`; known tools: {}",
+                        known.join(", ")
+                    ))
                 })
             })
             .collect::<Result<Vec<_>, _>>()?
@@ -170,7 +184,13 @@ impl Context {
     ///
     /// # Errors
     /// Returns an error when `cargo metadata` fails.
-    pub fn discover(root: &Path, config: Config, scope: Vec<PathBuf>, ci: bool, fix: bool) -> Result<Self, Error> {
+    pub fn discover(
+        root: &Path,
+        config: Config,
+        scope: Vec<PathBuf>,
+        ci: bool,
+        fix: bool,
+    ) -> Result<Self, Error> {
         let output = Command::new("cargo")
             .args(["metadata", "--no-deps", "--format-version", "1"])
             .current_dir(root)
@@ -185,7 +205,11 @@ impl Context {
         let metadata: Value = serde_json::from_slice(&output.stdout)
             .map_err(|e| command_error("cargo metadata", &e.to_string()))?;
         let (packages, doctests) = if scope.is_empty() {
-            let all = metadata.get("packages").and_then(Value::as_array).cloned().unwrap_or_default();
+            let all = metadata
+                .get("packages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             (Vec::new(), all.iter().any(has_lib))
         } else {
             owning_packages(&metadata, root, &scope)
@@ -210,14 +234,21 @@ fn command_error(command: &str, message: &str) -> Error {
 }
 
 fn has_lib(package: &Value) -> bool {
-    package.get("targets").and_then(Value::as_array).is_some_and(|targets| {
-        targets.iter().any(|target| {
-            target
-                .get("kind")
-                .and_then(Value::as_array)
-                .is_some_and(|kinds| kinds.iter().any(|k| matches!(k.as_str(), Some("lib" | "rlib"))))
+    package
+        .get("targets")
+        .and_then(Value::as_array)
+        .is_some_and(|targets| {
+            targets.iter().any(|target| {
+                target
+                    .get("kind")
+                    .and_then(Value::as_array)
+                    .is_some_and(|kinds| {
+                        kinds
+                            .iter()
+                            .any(|k| matches!(k.as_str(), Some("lib" | "rlib")))
+                    })
+            })
         })
-    })
 }
 
 /// Packages owning `scope` paths (the innermost package containing a path, plus every package inside
@@ -298,11 +329,20 @@ pub const MUTANTS_DIFF: &str = "target/rust-qa/mutants.diff";
 pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
     let scoped = !ctx.scope.is_empty();
     let packages: Vec<String> = if scoped {
-        ctx.packages.iter().flat_map(|p| ["-p".to_owned(), p.clone()]).collect()
+        ctx.packages
+            .iter()
+            .flat_map(|p| ["-p".to_owned(), p.clone()])
+            .collect()
     } else {
         vec!["--workspace".to_owned()]
     };
-    let json = |cmd: Cmd| if scoped { cmd.arg("--message-format=json") } else { cmd };
+    let json = |cmd: Cmd| {
+        if scoped {
+            cmd.arg("--message-format=json")
+        } else {
+            cmd
+        }
+    };
     match tool {
         Tool::Fmt => {
             let cmd = Cmd::new("cargo", &["fmt"]);
@@ -314,7 +354,10 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
             vec![if ctx.fix { cmd } else { cmd.arg("--check") }]
         }
         Tool::Clippy => {
-            let cmd = Cmd::new("cargo", &["clippy"]).args(packages).arg("--all-targets").arg("--all-features");
+            let cmd = Cmd::new("cargo", &["clippy"])
+                .args(packages)
+                .arg("--all-targets")
+                .arg("--all-features");
             vec![json(cmd).arg("--").arg("-D").arg("warnings")]
         }
         Tool::Dylint => {
@@ -325,8 +368,13 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
                 .arg("--all-features");
             vec![json(cmd)]
         }
-        Tool::AstGrep => vec![Cmd::new("ast-grep", &["scan"]).args(ctx.scope.iter().map(|p| p.display().to_string()))],
-        Tool::Deny => vec![Cmd::new("cargo", &["deny", "--workspace", "--all-features", "check"])],
+        Tool::AstGrep => vec![
+            Cmd::new("ast-grep", &["scan"]).args(ctx.scope.iter().map(|p| p.display().to_string())),
+        ],
+        Tool::Deny => vec![Cmd::new(
+            "cargo",
+            &["deny", "--workspace", "--all-features", "check"],
+        )],
         Tool::Audit => vec![Cmd::new("cargo", &["audit"])],
         Tool::Machete => vec![Cmd::new("cargo", &["machete"])],
         Tool::Test => {
@@ -336,7 +384,12 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
                     .arg("--all-features"),
             ];
             if ctx.doctests {
-                cmds.push(Cmd::new("cargo", &["test"]).args(packages).arg("--all-features").arg("--doc"));
+                cmds.push(
+                    Cmd::new("cargo", &["test"])
+                        .args(packages)
+                        .arg("--all-features")
+                        .arg("--doc"),
+                );
             }
             cmds
         }
@@ -350,7 +403,10 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
         Tool::Mutants => match ctx.config.mutants.mode {
             MutantsMode::Off => Vec::new(),
             MutantsMode::Full => vec![Cmd::new("cargo", &["mutants", "--workspace"])],
-            MutantsMode::Diff => vec![Cmd::new("cargo", &["mutants", "--workspace", "--in-diff", MUTANTS_DIFF])],
+            MutantsMode::Diff => vec![Cmd::new(
+                "cargo",
+                &["mutants", "--workspace", "--in-diff", MUTANTS_DIFF],
+            )],
         },
         Tool::Record | Tool::Suppression | Tool::Summary => Vec::new(),
     }
@@ -387,9 +443,14 @@ impl RealExecutor {
         let ctx = &self.ctx;
         let root = &ctx.root;
         let scoped = !ctx.scope.is_empty();
-        let package_bound = matches!(tool, Tool::Fmt | Tool::Clippy | Tool::Dylint | Tool::Test | Tool::Coverage);
+        let package_bound = matches!(
+            tool,
+            Tool::Fmt | Tool::Clippy | Tool::Dylint | Tool::Test | Tool::Coverage
+        );
         if scoped && package_bound && ctx.packages.is_empty() {
-            return Ok(Outcome::Skipped("no package owns the scoped paths".to_owned()));
+            return Ok(Outcome::Skipped(
+                "no package owns the scoped paths".to_owned(),
+            ));
         }
         match tool {
             Tool::Record => Ok(self.record()),
@@ -398,10 +459,12 @@ impl RealExecutor {
             Tool::AstGrep if !root.join("sgconfig.yml").is_file() => {
                 Ok(Outcome::Skipped("no sgconfig.yml".to_owned()))
             }
-            Tool::Dylint if !has_dylint_metadata(root)? => {
-                Ok(Outcome::Skipped("no [workspace.metadata.dylint] libraries".to_owned()))
+            Tool::Dylint if !has_dylint_metadata(root)? => Ok(Outcome::Skipped(
+                "no [workspace.metadata.dylint] libraries".to_owned(),
+            )),
+            Tool::Deny if !root.join("deny.toml").is_file() => {
+                Ok(Outcome::Skipped("no deny.toml".to_owned()))
             }
-            Tool::Deny if !root.join("deny.toml").is_file() => Ok(Outcome::Skipped("no deny.toml".to_owned())),
             Tool::Mutants if ctx.config.mutants.mode == MutantsMode::Off => {
                 Ok(Outcome::Skipped("mutants mode is off".to_owned()))
             }
@@ -453,7 +516,8 @@ impl RealExecutor {
         let record = Record::load(&ctx.root.join(&ctx.config.record))?;
         let exclude = crate::glob_set(&ctx.config.scan_exclude)?;
         let result = suppression::scan(&ctx.root, &ctx.scope, &exclude)?;
-        let findings = suppression::check(&result, &record, &ctx.config.record, ctx.scope.is_empty());
+        let findings =
+            suppression::check(&result, &record, &ctx.config.record, ctx.scope.is_empty());
         println!("    {} suppression(s) found", result.suppressions.len());
         Ok(Self::report(&findings))
     }
@@ -535,7 +599,9 @@ impl RealExecutor {
             return Ok(Outcome::Failed);
         }
         if build_failed {
-            println!("error: the build failed outside the scoped paths; scoped results are incomplete");
+            println!(
+                "error: the build failed outside the scoped paths; scoped results are incomplete"
+            );
             return Ok(Outcome::Failed);
         }
         Ok(Outcome::Passed)
@@ -551,7 +617,9 @@ impl RealExecutor {
         if dirty.is_empty() {
             return Ok(Outcome::Passed);
         }
-        println!("error: CI mode: the working tree changed after autofix; run `rust-qa run` locally and commit:");
+        println!(
+            "error: CI mode: the working tree changed after autofix; run `rust-qa run` locally and commit:"
+        );
         println!("{dirty}");
         Ok(Outcome::Failed)
     }

@@ -55,7 +55,11 @@ fn unknown_keys_are_rejected_so_typos_cannot_disable_a_gate() {
 #[test]
 fn coverage_threshold_above_one_hundred_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), DEFAULT_PATH, "[coverage]\nfail_under_lines = 101\n");
+    write(
+        dir.path(),
+        DEFAULT_PATH,
+        "[coverage]\nfail_under_lines = 101\n",
+    );
     assert!(Config::load(dir.path(), None).is_err());
 }
 

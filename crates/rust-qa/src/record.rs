@@ -144,7 +144,9 @@ pub fn normalise_rule(rule: &str) -> String {
     let rule = rule.trim();
     match rule.split_once("::") {
         None => rule.replace('-', "_"),
-        Some((tool @ ("clippy" | "rustdoc"), name)) => format!("{tool}::{}", name.replace('-', "_")),
+        Some((tool @ ("clippy" | "rustdoc"), name)) => {
+            format!("{tool}::{}", name.replace('-', "_"))
+        }
         Some(_) => rule.to_owned(),
     }
 }

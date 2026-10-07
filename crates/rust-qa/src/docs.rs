@@ -14,18 +14,42 @@ use crate::Error;
 static BUNDLED: &[(&str, &str)] = &[
     ("cargo-audit", include_str!("../docs/rules/cargo-audit.md")),
     ("cargo-deny", include_str!("../docs/rules/cargo-deny.md")),
-    ("cargo-machete", include_str!("../docs/rules/cargo-machete.md")),
+    (
+        "cargo-machete",
+        include_str!("../docs/rules/cargo-machete.md"),
+    ),
     ("coverage", include_str!("../docs/rules/coverage.md")),
     ("mutants", include_str!("../docs/rules/mutants.md")),
     ("tests", include_str!("../docs/rules/tests.md")),
     ("clippy::all", include_str!("../docs/rules/clippy.all.md")),
-    ("clippy::cargo", include_str!("../docs/rules/clippy.cargo.md")),
-    ("clippy::nursery", include_str!("../docs/rules/clippy.nursery.md")),
-    ("clippy::pedantic", include_str!("../docs/rules/clippy.pedantic.md")),
-    ("clippy::restriction", include_str!("../docs/rules/clippy.restriction.md")),
-    ("rqaci.record.invalid", include_str!("../docs/rules/rqaci.record.invalid.md")),
-    ("rqaci.record.stale", include_str!("../docs/rules/rqaci.record.stale.md")),
-    ("rqaci.summary.stale", include_str!("../docs/rules/rqaci.summary.stale.md")),
+    (
+        "clippy::cargo",
+        include_str!("../docs/rules/clippy.cargo.md"),
+    ),
+    (
+        "clippy::nursery",
+        include_str!("../docs/rules/clippy.nursery.md"),
+    ),
+    (
+        "clippy::pedantic",
+        include_str!("../docs/rules/clippy.pedantic.md"),
+    ),
+    (
+        "clippy::restriction",
+        include_str!("../docs/rules/clippy.restriction.md"),
+    ),
+    (
+        "rqaci.record.invalid",
+        include_str!("../docs/rules/rqaci.record.invalid.md"),
+    ),
+    (
+        "rqaci.record.stale",
+        include_str!("../docs/rules/rqaci.record.stale.md"),
+    ),
+    (
+        "rqaci.summary.stale",
+        include_str!("../docs/rules/rqaci.summary.stale.md"),
+    ),
     (
         "rqaci.suppression.unrecorded",
         include_str!("../docs/rules/rqaci.suppression.unrecorded.md"),
@@ -40,7 +64,10 @@ static BUNDLED: &[(&str, &str)] = &[
 /// Bundled document for `id`, if any.
 #[must_use]
 pub fn bundled(id: &str) -> Option<&'static str> {
-    BUNDLED.iter().find(|(key, _)| *key == id).map(|(_, text)| *text)
+    BUNDLED
+        .iter()
+        .find(|(key, _)| *key == id)
+        .map(|(_, text)| *text)
 }
 
 /// Identifiers with a bundled document.
@@ -148,11 +175,19 @@ impl Resolver {
     }
 
     fn rustc_book(&self, name: &str) -> Option<Doc> {
-        let output = self.command("rustc").args(["--print", "sysroot"]).output().ok()?;
+        let output = self
+            .command("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .ok()?;
         let sysroot = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
         let listing = sysroot.join("share/doc/rust/html/rustc/lints/listing");
         let anchor = format!("id=\"{}\"", name.replace('_', "-"));
-        for page in ["allowed-by-default.html", "warn-by-default.html", "deny-by-default.html"] {
+        for page in [
+            "allowed-by-default.html",
+            "warn-by-default.html",
+            "deny-by-default.html",
+        ] {
             let path = listing.join(page);
             let Ok(html) = std::fs::read_to_string(&path) else {
                 continue;

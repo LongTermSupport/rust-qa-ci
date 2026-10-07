@@ -38,8 +38,14 @@ fn render_is_delimited_with_one_line_per_defence_and_doc_route() {
     let region = render(&defences(), &record());
     assert!(region.starts_with(BEGIN));
     assert!(region.trim_end().ends_with(END));
-    assert!(region.contains("- `clippy::unwrap_used` (clippy, deny): `rust-qa rule-doc clippy::unwrap_used`\n"));
-    assert!(region.contains("- `example_type_rule` (dylint, deny): `rust-qa rule-doc example_type_rule`\n"));
+    assert!(region.contains(
+        "- `clippy::unwrap_used` (clippy, deny): `rust-qa rule-doc clippy::unwrap_used`\n"
+    ));
+    assert!(
+        region.contains(
+            "- `example_type_rule` (dylint, deny): `rust-qa rule-doc example_type_rule`\n"
+        )
+    );
     assert!(region.contains("- `clippy::unwrap_used` at `tests/a.rs`"));
 }
 

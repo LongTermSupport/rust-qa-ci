@@ -7,7 +7,12 @@ use rust_qa::docs::{self, Resolver, Source, doc_file_name};
 
 #[test]
 fn bundled_docs_cover_builtin_ids_groups_and_the_warnings_lint() {
-    for id in ["rqaci.suppression.unrecorded", "warnings", "clippy::pedantic", "clippy::all"] {
+    for id in [
+        "rqaci.suppression.unrecorded",
+        "warnings",
+        "clippy::pedantic",
+        "clippy::all",
+    ] {
         assert!(docs::bundled(id).is_some(), "{id} missing");
     }
 }
@@ -18,8 +23,14 @@ fn every_bundled_doc_names_its_id_and_states_the_correct_construction() {
     assert!(ids.len() > 1);
     for id in ids {
         let text = docs::bundled(id).unwrap();
-        assert!(text.starts_with(&format!("# {id}\n")), "{id}: first line must be `# {id}`");
-        assert!(text.contains("\n## How to fix correctly\n"), "{id}: no correct-construction section");
+        assert!(
+            text.starts_with(&format!("# {id}\n")),
+            "{id}: first line must be `# {id}`"
+        );
+        assert!(
+            text.contains("\n## How to fix correctly\n"),
+            "{id}: no correct-construction section"
+        );
     }
 }
 
@@ -31,7 +42,12 @@ fn every_file_under_docs_rules_is_bundled() {
         let path = entry.unwrap().path();
         let text = std::fs::read_to_string(&path).unwrap();
         let id = text.lines().next().unwrap().strip_prefix("# ").unwrap();
-        assert_eq!(docs::bundled(id), Some(text.as_str()), "{} is not bundled", path.display());
+        assert_eq!(
+            docs::bundled(id),
+            Some(text.as_str()),
+            "{} is not bundled",
+            path.display()
+        );
         on_disk += 1;
     }
     assert_eq!(docs::bundled_ids().count(), on_disk);
@@ -39,9 +55,15 @@ fn every_file_under_docs_rules_is_bundled() {
 
 #[test]
 fn doc_file_names_replace_path_separators() {
-    assert_eq!(doc_file_name("clippy::unwrap_used"), "clippy.unwrap_used.md");
+    assert_eq!(
+        doc_file_name("clippy::unwrap_used"),
+        "clippy.unwrap_used.md"
+    );
     assert_eq!(doc_file_name("no-println"), "no-println.md");
-    assert_eq!(doc_file_name("rqaci.record.invalid"), "rqaci.record.invalid.md");
+    assert_eq!(
+        doc_file_name("rqaci.record.invalid"),
+        "rqaci.record.invalid.md"
+    );
 }
 
 #[test]
@@ -74,7 +96,12 @@ fn clippy_lints_resolve_offline_from_the_installed_clippy() {
     let doc = resolver.resolve("clippy::unwrap_used").unwrap().unwrap();
     assert_eq!(doc.source, Source::ClippyExplain);
     assert!(doc.text.to_lowercase().contains("unwrap"));
-    assert!(resolver.resolve("clippy::no_such_lint_anywhere").unwrap().is_none());
+    assert!(
+        resolver
+            .resolve("clippy::no_such_lint_anywhere")
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -82,7 +109,10 @@ fn rustc_lints_resolve_offline_from_the_installed_toolchain() {
     let dir = tempfile::tempdir().unwrap();
     let resolver = Resolver::new(dir.path(), Path::new("docs/defences"));
     let doc = resolver.resolve("unsafe_code").unwrap().unwrap();
-    assert!(matches!(doc.source, Source::RustcBook(_) | Source::RustcHelp));
+    assert!(matches!(
+        doc.source,
+        Source::RustcBook(_) | Source::RustcHelp
+    ));
     assert!(doc.text.contains("unsafe"));
 }
 

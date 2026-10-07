@@ -92,88 +92,169 @@ pub fn enumerate(
     config: &Config,
     dylint: &dyn Fn(&Path) -> Result<Vec<DylintLint>, Error>,
 ) -> Result<Vec<Defence>, Error> {
-    let mut defences: Vec<Defence> = Vec::new();
-    let mut push = |id: &str, engine: Engine, level: &str, origin: &str| {
-        if defences.iter().all(|d| d.id != id) {
-            defences.push(Defence {
+    let mut out = Collector::default();
+    let tools = &config.tools;
+    if tools.record {
+        out.push(
+            builtin::RECORD_INVALID,
+            Engine::Builtin,
+            "deny",
+            "rust-qa record",
+        );
+    }
+    if tools.suppression {
+        out.push(
+            builtin::SUPPRESSION_UNRECORDED,
+            Engine::Builtin,
+            "deny",
+            "rust-qa suppression",
+        );
+        out.push(
+            builtin::RECORD_STALE,
+            Engine::Builtin,
+            "deny",
+            "rust-qa suppression",
+        );
+    }
+    if tools.summary && config.summary.file.is_some() {
+        out.push(
+            builtin::SUMMARY_STALE,
+            Engine::Builtin,
+            "deny",
+            "rust-qa summary",
+        );
+    }
+    if tools.clippy {
+        out.push(
+            "warnings",
+            Engine::Rustc,
+            "deny (-D warnings)",
+            "rust-qa clippy",
+        );
+        lint_tables(root, config, &mut out)?;
+    }
+    if tools.dylint && has_dylint_metadata(root)? {
+        for lint in dylint(root)? {
+            let origin = format!("dylint library {}", lint.library);
+            out.push(&lint.name, Engine::Dylint, &lint.level, &origin);
+        }
+    }
+    if tools.ast_grep && root.join("sgconfig.yml").is_file() {
+        for rule in ast_grep_rules(root)? {
+            if rule.severity == "error" {
+                out.push(
+                    &rule.id,
+                    Engine::AstGrep,
+                    "error",
+                    &rule.file.display().to_string(),
+                );
+            }
+        }
+    }
+    runners(root, config, &mut out);
+    Ok(out.defences)
+}
+
+/// Accumulates defences, keeping the first entry for each identifier.
+#[derive(Default)]
+struct Collector {
+    defences: Vec<Defence>,
+}
+
+impl Collector {
+    fn push(&mut self, id: &str, engine: Engine, level: &str, origin: &str) {
+        if self.defences.iter().all(|d| d.id != id) {
+            self.defences.push(Defence {
                 id: id.to_owned(),
                 engine,
                 level: level.to_owned(),
                 origin: origin.to_owned(),
             });
         }
-    };
+    }
+}
+
+fn lint_tables(root: &Path, config: &Config, out: &mut Collector) -> Result<(), Error> {
+    let exclude = crate::glob_set(&config.scan_exclude)?;
+    let manifests = workspace_files(root, &[], &exclude, |p| {
+        p.file_name().is_some_and(|n| n == "Cargo.toml")
+    });
+    for manifest in manifests {
+        let text = read_to_string(&root.join(&manifest))?;
+        for setting in lint_settings(&text, &manifest)? {
+            let engine = if setting.id.starts_with("clippy::") {
+                Engine::Clippy
+            } else if setting.id.starts_with("rustdoc::") {
+                Engine::Rustdoc
+            } else {
+                Engine::Rustc
+            };
+            let level = match setting.level {
+                Level::Allow => continue,
+                Level::Warn => "warn (blocking via -D warnings)",
+                other => other.as_str(),
+            };
+            let origin = format!("{}:{}", setting.manifest.display(), setting.line);
+            out.push(&setting.id, engine, level, &origin);
+        }
+    }
+    Ok(())
+}
+
+fn runners(root: &Path, config: &Config, out: &mut Collector) {
     let tools = &config.tools;
-    if tools.record {
-        push(builtin::RECORD_INVALID, Engine::Builtin, "deny", "rust-qa record");
-    }
-    if tools.suppression {
-        push(builtin::SUPPRESSION_UNRECORDED, Engine::Builtin, "deny", "rust-qa suppression");
-        push(builtin::RECORD_STALE, Engine::Builtin, "deny", "rust-qa suppression");
-    }
-    if tools.summary && config.summary.file.is_some() {
-        push(builtin::SUMMARY_STALE, Engine::Builtin, "deny", "rust-qa summary");
-    }
-    if tools.clippy {
-        push("warnings", Engine::Rustc, "deny (-D warnings)", "rust-qa clippy");
-        let exclude = crate::glob_set(&config.scan_exclude)?;
-        let manifests = workspace_files(root, &[], &exclude, |p| p.file_name().is_some_and(|n| n == "Cargo.toml"));
-        for manifest in manifests {
-            let text = read_to_string(&root.join(&manifest))?;
-            for setting in lint_settings(&text, &manifest)? {
-                let engine = if setting.id.starts_with("clippy::") {
-                    Engine::Clippy
-                } else if setting.id.starts_with("rustdoc::") {
-                    Engine::Rustdoc
-                } else {
-                    Engine::Rustc
-                };
-                let level = match setting.level {
-                    Level::Allow => continue,
-                    Level::Warn => "warn (blocking via -D warnings)",
-                    other => other.as_str(),
-                };
-                let origin = format!("{}:{}", setting.manifest.display(), setting.line);
-                push(&setting.id, engine, level, &origin);
-            }
-        }
-    }
-    if tools.dylint && has_dylint_metadata(root)? {
-        for lint in dylint(root)? {
-            push(&lint.name, Engine::Dylint, &lint.level, &format!("dylint library {}", lint.library));
-        }
-    }
-    if tools.ast_grep && root.join("sgconfig.yml").is_file() {
-        for rule in ast_grep_rules(root)? {
-            if rule.severity == "error" {
-                push(&rule.id, Engine::AstGrep, "error", &rule.file.display().to_string());
-            }
-        }
-    }
     if tools.deny && root.join("deny.toml").is_file() {
-        push("cargo-deny", Engine::Runner, "advisories, bans, licenses, sources", "deny.toml");
+        out.push(
+            "cargo-deny",
+            Engine::Runner,
+            "advisories, bans, licenses, sources",
+            "deny.toml",
+        );
     }
     if tools.audit {
-        push("cargo-audit", Engine::Runner, "advisories", "rust-qa audit");
+        out.push("cargo-audit", Engine::Runner, "advisories", "rust-qa audit");
     }
     if tools.machete {
-        push("cargo-machete", Engine::Runner, "unused dependencies", "rust-qa machete");
+        out.push(
+            "cargo-machete",
+            Engine::Runner,
+            "unused dependencies",
+            "rust-qa machete",
+        );
     }
     if tools.test {
-        push("tests", Engine::Runner, "nextest plus doctests", "rust-qa test");
+        out.push(
+            "tests",
+            Engine::Runner,
+            "nextest plus doctests",
+            "rust-qa test",
+        );
     }
     if tools.coverage {
         let level = format!("lines >= {}%", config.coverage.fail_under_lines);
-        push("coverage", Engine::Runner, &level, "qa/rust-qa.toml [coverage]");
+        out.push(
+            "coverage",
+            Engine::Runner,
+            &level,
+            "qa/rust-qa.toml [coverage]",
+        );
     }
     if tools.mutants && config.mutants.mode != MutantsMode::Off {
-        let level = match config.mutants.mode {
-            MutantsMode::Diff => format!("missed mutants fail, code changed since {}", config.mutants.base),
-            _ => "missed mutants fail, whole workspace".to_owned(),
+        let level = if config.mutants.mode == MutantsMode::Diff {
+            format!(
+                "missed mutants fail, code changed since {}",
+                config.mutants.base
+            )
+        } else {
+            "missed mutants fail, whole workspace".to_owned()
         };
-        push("mutants", Engine::Runner, &level, "qa/rust-qa.toml [mutants]");
+        out.push(
+            "mutants",
+            Engine::Runner,
+            &level,
+            "qa/rust-qa.toml [mutants]",
+        );
     }
-    Ok(defences)
 }
 
 /// Parses `cargo dylint list --all` output: unindented library names followed by indented
@@ -237,7 +318,12 @@ pub fn ast_grep_rules(root: &Path) -> Result<Vec<AstGrepRule>, Error> {
         .first()
         .and_then(|doc| field(doc, "ruleDirs"))
         .and_then(Yaml::as_vec)
-        .map(|dirs| dirs.iter().filter_map(Yaml::as_str).map(PathBuf::from).collect())
+        .map(|dirs| {
+            dirs.iter()
+                .filter_map(Yaml::as_str)
+                .map(PathBuf::from)
+                .collect()
+        })
         .unwrap_or_default();
     let mut rules = Vec::new();
     let none = crate::glob_set::<&str>(&[])?;

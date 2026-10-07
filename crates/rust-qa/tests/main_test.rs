@@ -7,7 +7,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-const GOOD: &str = "The generated parser module is regenerated from the grammar and never edited by hand.";
+const GOOD: &str =
+    "The generated parser module is regenerated from the grammar and never edited by hand.";
 
 fn write(root: &Path, rel: &str, text: &str) {
     let path = root.join(rel);
@@ -24,7 +25,11 @@ fn fixture() -> tempfile::TempDir {
         "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n\n\
          [lints.clippy]\nunwrap_used = \"deny\"\n",
     );
-    write(root, "src/lib.rs", "//! Fixture.\n\n/// Adds.\npub fn add(a: u8, b: u8) -> Option<u8> {\n    a.checked_add(b)\n}\n");
+    write(
+        root,
+        "src/lib.rs",
+        "//! Fixture.\n\n/// Adds.\npub fn add(a: u8, b: u8) -> Option<u8> {\n    a.checked_add(b)\n}\n",
+    );
     dir
 }
 
@@ -48,7 +53,9 @@ fn rules_lists_defences_derived_from_configuration_and_the_record() {
     write(
         dir.path(),
         "qa/record.toml",
-        &format!("[[exception]]\nrule = \"dead_code\"\npath = \"src/gen.rs\"\njustification = \"{GOOD}\"\n"),
+        &format!(
+            "[[exception]]\nrule = \"dead_code\"\npath = \"src/gen.rs\"\njustification = \"{GOOD}\"\n"
+        ),
     );
     let output = rust_qa(dir.path(), &["rules"]);
     let text = stdout(&output);
@@ -64,7 +71,13 @@ fn rules_json_is_machine_readable() {
     let dir = fixture();
     let output = rust_qa(dir.path(), &["rules", "--json"]);
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(value["defences"].as_array().unwrap().iter().any(|d| d["id"] == "clippy::unwrap_used"));
+    assert!(
+        value["defences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["id"] == "clippy::unwrap_used")
+    );
     assert_eq!(value["record"].as_array().unwrap().len(), 0);
 }
 
@@ -89,7 +102,11 @@ fn docs_check_passes_when_every_listed_id_resolves() {
 fn docs_check_fails_on_a_dangling_project_rule() {
     let dir = fixture();
     write(dir.path(), "sgconfig.yml", "ruleDirs:\n  - rules\n");
-    write(dir.path(), "rules/r.yml", "id: undocumented-rule\nlanguage: rust\nseverity: error\nrule:\n  pattern: x\n");
+    write(
+        dir.path(),
+        "rules/r.yml",
+        "id: undocumented-rule\nlanguage: rust\nseverity: error\nrule:\n  pattern: x\n",
+    );
     let output = rust_qa(dir.path(), &["docs-check"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(stdout(&output).contains("undocumented-rule"));
@@ -111,7 +128,11 @@ fn record_check_rejects_generic_justifications() {
 #[test]
 fn unrecorded_suppression_fails_detectors_and_runners_never_start() {
     let dir = fixture();
-    write(dir.path(), "src/extra.rs", "#[LINTOFF(dead_code)]\nfn unused() {}\n");
+    write(
+        dir.path(),
+        "src/extra.rs",
+        "#[LINTOFF(dead_code)]\nfn unused() {}\n",
+    );
     let output = rust_qa(dir.path(), &["run", "-t", "suppression", "-t", "test"]);
     let text = stdout(&output);
     assert_eq!(output.status.code(), Some(1), "{text}");
@@ -125,11 +146,17 @@ fn unrecorded_suppression_fails_detectors_and_runners_never_start() {
 #[test]
 fn recorded_suppression_passes() {
     let dir = fixture();
-    write(dir.path(), "src/extra.rs", "#[expect(dead_code, reason = \"generated\")]\nfn unused() {}\n");
+    write(
+        dir.path(),
+        "src/extra.rs",
+        "#[expect(dead_code, reason = \"generated\")]\nfn unused() {}\n",
+    );
     write(
         dir.path(),
         "qa/record.toml",
-        &format!("[[exception]]\nrule = \"dead_code\"\npath = \"src/extra.rs\"\njustification = \"{GOOD}\"\n"),
+        &format!(
+            "[[exception]]\nrule = \"dead_code\"\npath = \"src/extra.rs\"\njustification = \"{GOOD}\"\n"
+        ),
     );
     let output = rust_qa(dir.path(), &["run", "-t", "record", "-t", "suppression"]);
     assert!(output.status.success(), "{}", stdout(&output));
@@ -138,7 +165,11 @@ fn recorded_suppression_passes() {
 #[test]
 fn summary_writes_a_region_and_check_mode_detects_staleness() {
     let dir = fixture();
-    write(dir.path(), "qa/rust-qa.toml", "[summary]\nfile = \"AGENTS.md\"\n");
+    write(
+        dir.path(),
+        "qa/rust-qa.toml",
+        "[summary]\nfile = \"AGENTS.md\"\n",
+    );
     write(dir.path(), "AGENTS.md", "# Agents\n");
     let check = rust_qa(dir.path(), &["summary", "--check"]);
     assert_eq!(check.status.code(), Some(1));
@@ -147,7 +178,11 @@ fn summary_writes_a_region_and_check_mode_detects_staleness() {
     let text = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
     assert!(text.starts_with("# Agents\n\n<!-- BEGIN rust-qa-ci"));
     assert!(text.contains("`clippy::unwrap_used`"));
-    assert!(rust_qa(dir.path(), &["summary", "--check"]).status.success());
+    assert!(
+        rust_qa(dir.path(), &["summary", "--check"])
+            .status
+            .success()
+    );
 }
 
 #[test]

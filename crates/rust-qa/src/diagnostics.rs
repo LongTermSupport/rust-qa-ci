@@ -35,14 +35,22 @@ pub fn parse_cargo_messages(stream: &str) -> Vec<Diagnostic> {
         .filter(|value| value.get("reason").and_then(Value::as_str) == Some("compiler-message"))
         .filter_map(|value| value.get("message").cloned())
         .map(|message| {
-            let text = |key: &str| message.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
+            let text = |key: &str| {
+                message
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned()
+            };
             let files = message
                 .get("spans")
                 .and_then(Value::as_array)
                 .map(|spans| {
                     spans
                         .iter()
-                        .filter(|span| span.get("is_primary").and_then(Value::as_bool) == Some(true))
+                        .filter(|span| {
+                            span.get("is_primary").and_then(Value::as_bool) == Some(true)
+                        })
                         .filter_map(|span| span.get("file_name").and_then(Value::as_str))
                         .map(PathBuf::from)
                         .collect()

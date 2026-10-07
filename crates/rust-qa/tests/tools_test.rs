@@ -32,7 +32,11 @@ fn names_round_trip() {
 #[test]
 fn selection_is_canonical_order_regardless_of_request_order() {
     let config = Config::default();
-    let picked = select(&["test".to_owned(), "clippy".to_owned(), "fmt".to_owned()], &config).unwrap();
+    let picked = select(
+        &["test".to_owned(), "clippy".to_owned(), "fmt".to_owned()],
+        &config,
+    )
+    .unwrap();
     assert_eq!(picked, vec![Tool::Fmt, Tool::Clippy, Tool::Test]);
 }
 
@@ -85,7 +89,10 @@ fn owning_packages_are_found_from_cargo_metadata() {
 fn doctests_are_skipped_without_library_targets() {
     let mut ctx = context(Config::default());
     ctx.doctests = false;
-    assert_eq!(line(Tool::Test, &ctx), vec!["cargo nextest run --workspace --all-features"]);
+    assert_eq!(
+        line(Tool::Test, &ctx),
+        vec!["cargo nextest run --workspace --all-features"]
+    );
 }
 
 fn line(tool: Tool, ctx: &Context) -> Vec<String> {
@@ -149,9 +156,15 @@ fn coverage_gate_uses_configured_threshold() {
 #[test]
 fn mutants_follow_the_configured_mode() {
     let mut config = Config::default();
-    assert_eq!(line(Tool::Mutants, &context(config.clone())), Vec::<String>::new());
+    assert_eq!(
+        line(Tool::Mutants, &context(config.clone())),
+        Vec::<String>::new()
+    );
     config.mutants.mode = MutantsMode::Full;
-    assert_eq!(line(Tool::Mutants, &context(config.clone())), vec!["cargo mutants --workspace"]);
+    assert_eq!(
+        line(Tool::Mutants, &context(config.clone())),
+        vec!["cargo mutants --workspace"]
+    );
     config.mutants.mode = MutantsMode::Diff;
     assert_eq!(
         line(Tool::Mutants, &context(config)),

@@ -110,27 +110,23 @@ fn dispatch(cli: Cli) -> Result<bool, Error> {
             no_fix,
             fail_fast,
         } => {
-            let ci = ci || std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
+            let ci =
+                ci || std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "false" && v != "0");
             run(&root, config, &tools, &paths, ci, !no_fix, fail_fast)
         }
         Cmd::Tools => {
             for tool in Tool::ALL {
-                let state = if tool.enabled(&config) { "enabled" } else { "disabled" };
+                let state = if tool.enabled(&config) {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
                 println!("{:<12} {:<10} {state}", tool.name(), tool.phase().name());
             }
             Ok(true)
         }
         Cmd::Rules { json } => rules(&root, &config, json),
-        Cmd::RuleDoc { id } => {
-            let resolver = Resolver::new(&root, &config.docs_dir);
-            let Some(doc) = resolver.resolve(&id)? else {
-                println!("no documentation for `{id}` (dangling identifier)");
-                return Ok(false);
-            };
-            println!("{}", doc.text);
-            eprintln!("(source: {:?})", doc.source);
-            Ok(true)
-        }
+        Cmd::RuleDoc { id } => rule_doc(&root, &config, &id),
         Cmd::DocsCheck => docs_check(&root, &config),
         Cmd::Record { action } => {
             let record = Record::load(&root.join(&config.record))?;
@@ -146,33 +142,48 @@ fn dispatch(cli: Cli) -> Result<bool, Error> {
                 }
             }
         }
-        Cmd::Summary { check } => {
-            let Some(file) = config.summary.file.clone() else {
-                return Err(Error::Usage("no [summary] file configured in qa/rust-qa.toml".to_owned()));
-            };
-            let path = root.join(&file);
-            let existing = if path.exists() {
-                rust_qa::read_to_string(&path)?
-            } else {
-                String::new()
-            };
-            let updated = summary::splice(&existing, &render_summary(&root, &config, dylint_lints)?);
-            if updated == existing {
-                return Ok(true);
-            }
-            if check {
-                print_findings(&[Finding {
-                    rule: builtin::SUMMARY_STALE,
-                    path: file,
-                    line: 0,
-                    message: "generated defence summary is out of date; run `rust-qa summary`".to_owned(),
-                }]);
-                return Ok(false);
-            }
-            std::fs::write(&path, updated).map_err(|source| Error::Write { path, source })?;
-            Ok(true)
-        }
+        Cmd::Summary { check } => summary_command(&root, &config, check),
     }
+}
+
+fn rule_doc(root: &Path, config: &Config, id: &str) -> Result<bool, Error> {
+    let resolver = Resolver::new(root, &config.docs_dir);
+    let Some(doc) = resolver.resolve(id)? else {
+        println!("no documentation for `{id}` (dangling identifier)");
+        return Ok(false);
+    };
+    println!("{}", doc.text);
+    eprintln!("(source: {:?})", doc.source);
+    Ok(true)
+}
+
+fn summary_command(root: &Path, config: &Config, check: bool) -> Result<bool, Error> {
+    let Some(file) = config.summary.file.clone() else {
+        return Err(Error::Usage(
+            "no [summary] file configured in qa/rust-qa.toml".to_owned(),
+        ));
+    };
+    let path = root.join(&file);
+    let existing = if path.exists() {
+        rust_qa::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let updated = summary::splice(&existing, &render_summary(root, config, dylint_lints)?);
+    if updated == existing {
+        return Ok(true);
+    }
+    if check {
+        print_findings(&[Finding {
+            rule: builtin::SUMMARY_STALE,
+            path: file,
+            line: 0,
+            message: "generated defence summary is out of date; run `rust-qa summary`".to_owned(),
+        }]);
+        return Ok(false);
+    }
+    std::fs::write(&path, updated).map_err(|source| Error::Write { path, source })?;
+    Ok(true)
 }
 
 fn discover_root() -> Result<PathBuf, Error> {
@@ -239,7 +250,13 @@ fn relative_to_root(root: &Path, path: &Path) -> Result<PathBuf, Error> {
     absolute
         .strip_prefix(root)
         .map(Path::to_path_buf)
-        .map_err(|_| Error::Usage(format!("{} is outside the workspace {}", path.display(), root.display())))
+        .map_err(|_| {
+            Error::Usage(format!(
+                "{} is outside the workspace {}",
+                path.display(),
+                root.display()
+            ))
+        })
 }
 
 fn rules(root: &Path, config: &Config, json: bool) -> Result<bool, Error> {
@@ -278,9 +295,7 @@ fn print_record(record: &Record) {
     for exception in &record.exceptions {
         println!(
             "  {:<40} {:<36} {}",
-            exception.rule,
-            exception.path,
-            exception.justification
+            exception.rule, exception.path, exception.justification
         );
     }
 }
@@ -301,9 +316,19 @@ fn docs_check(root: &Path, config: &Config) -> Result<bool, Error> {
         }
     }
     for id in &dangling {
-        println!("dangling identifier: `{id}` has no documentation (add {})", config.docs_dir.join(rust_qa::docs::doc_file_name(id)).display());
+        println!(
+            "dangling identifier: `{id}` has no documentation (add {})",
+            config
+                .docs_dir
+                .join(rust_qa::docs::doc_file_name(id))
+                .display()
+        );
     }
-    println!("{} identifier(s) checked, {} dangling", ids.len(), dangling.len());
+    println!(
+        "{} identifier(s) checked, {} dangling",
+        ids.len(),
+        dangling.len()
+    );
     Ok(dangling.is_empty())
 }
 

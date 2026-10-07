@@ -115,11 +115,17 @@ fn line_of_key(text: &str, tool: &str, name: &str) -> usize {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
             let header = trimmed.trim_matches(|c| c == '[' || c == ']').trim();
-            in_table = header == format!("lints.{tool}") || header == format!("workspace.lints.{tool}");
+            in_table =
+                header == format!("lints.{tool}") || header == format!("workspace.lints.{tool}");
             continue;
         }
         if in_table {
-            let key = trimmed.split('=').next().unwrap_or("").trim().trim_matches('"');
+            let key = trimmed
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches('"');
             if key == name {
                 return index + 1;
             }
@@ -162,6 +168,7 @@ pub fn workspace_files(
     for start in starts {
         let walker = ignore::WalkBuilder::new(&start)
             .hidden(false)
+            .parents(false)
             .git_global(false)
             .require_git(false)
             .filter_entry(|entry| {

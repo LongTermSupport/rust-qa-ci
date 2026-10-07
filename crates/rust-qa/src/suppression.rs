@@ -129,7 +129,12 @@ pub fn scan(root: &Path, scope: &[PathBuf], exclude: &GlobSet) -> Result<ScanRes
 /// Turns a scan into findings: unrecorded suppressions, unparseable files, and (on full scans)
 /// record exceptions that match nothing.
 #[must_use]
-pub fn check(result: &ScanResult, record: &Record, record_path: &Path, report_stale: bool) -> Vec<Finding> {
+pub fn check(
+    result: &ScanResult,
+    record: &Record,
+    record_path: &Path,
+    report_stale: bool,
+) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut used = vec![false; record.exceptions.len()];
     for (path, message) in &result.unparseable {
@@ -183,7 +188,10 @@ pub fn check(result: &ScanResult, record: &Record, record_path: &Path, report_st
 fn is_scanned(rel: &Path) -> bool {
     let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("");
     rel.extension().is_some_and(|e| e == "rs")
-        || matches!(name, "Cargo.toml" | "clippy.toml" | ".clippy.toml" | "deny.toml")
+        || matches!(
+            name,
+            "Cargo.toml" | "clippy.toml" | ".clippy.toml" | "deny.toml"
+        )
         || is_cargo_config(rel)
 }
 
@@ -202,7 +210,12 @@ struct AttrVisitor<'a> {
 
 impl<'ast> Visit<'ast> for AttrVisitor<'_> {
     fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
-        collect_meta(&attr.meta, attr.span().start().line, Route::Attribute, self.out);
+        collect_meta(
+            &attr.meta,
+            attr.span().start().line,
+            Route::Attribute,
+            self.out,
+        );
         syn::visit::visit_attribute(self, attr);
     }
 
@@ -226,7 +239,8 @@ fn collect_meta(meta: &Meta, line: usize, route: Route, out: &mut Vec<(String, u
         "allow" | "expect" => {
             for item in nested {
                 if let Meta::Path(path) = item {
-                    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+                    let segments: Vec<String> =
+                        path.segments.iter().map(|s| s.ident.to_string()).collect();
                     out.push((normalise_rule(&segments.join("::")), line, route));
                 }
             }
@@ -287,7 +301,12 @@ fn ast_grep_ignores(text: &str, out: &mut Vec<(String, usize, Route)>) {
         let ids: Vec<&str> = rest
             .trim_start()
             .strip_prefix(':')
-            .map(|list| list.split(',').map(str::trim).filter(|id| !id.is_empty()).collect())
+            .map(|list| {
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
         if ids.is_empty() {
             out.push(("ast-grep::*".to_owned(), line, Route::AstGrepIgnore));
@@ -337,7 +356,10 @@ fn comments(text: &str) -> Vec<(usize, String)> {
                     i += 1;
                 }
             }
-            found.push((start_line, chars.get(start..i).unwrap_or(&[]).iter().collect()));
+            found.push((
+                start_line,
+                chars.get(start..i).unwrap_or(&[]).iter().collect(),
+            ));
         } else if c == 'r' && starts_literal(&chars, i) {
             let mut hashes = 0;
             let mut j = i + 1;
@@ -413,10 +435,20 @@ fn line_in_table(text: &str, header: Option<&str>, key: &str) -> usize {
     for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
-            current = Some(trimmed.trim_matches(|c| c == '[' || c == ']').trim().to_owned());
+            current = Some(
+                trimmed
+                    .trim_matches(|c| c == '[' || c == ']')
+                    .trim()
+                    .to_owned(),
+            );
             continue;
         }
-        let this_key = trimmed.split('=').next().unwrap_or("").trim().trim_matches('"');
+        let this_key = trimmed
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"');
         if current.as_deref() == header && this_key == key {
             return index + 1;
         }
@@ -431,20 +463,32 @@ fn parse_toml(text: &str, rel: &Path) -> Result<Value, Error> {
     })
 }
 
-fn clippy_config(text: &str, rel: &Path, out: &mut Vec<(String, usize, Route)>) -> Result<(), Error> {
+fn clippy_config(
+    text: &str,
+    rel: &Path,
+    out: &mut Vec<(String, usize, Route)>,
+) -> Result<(), Error> {
     let value = parse_toml(text, rel)?;
     let Some(table) = value.as_table() else {
         return Ok(());
     };
     for (key, setting) in table {
         if key.starts_with("allow-") && setting.as_bool() == Some(true) {
-            out.push((format!("clippy.toml::{key}"), line_in_table(text, None, key), Route::ClippyConfig));
+            out.push((
+                format!("clippy.toml::{key}"),
+                line_in_table(text, None, key),
+                Route::ClippyConfig,
+            ));
         }
     }
     Ok(())
 }
 
-fn deny_ignores(text: &str, rel: &Path, out: &mut Vec<(String, usize, Route)>) -> Result<(), Error> {
+fn deny_ignores(
+    text: &str,
+    rel: &Path,
+    out: &mut Vec<(String, usize, Route)>,
+) -> Result<(), Error> {
     let value = parse_toml(text, rel)?;
     let Some(ignores) = value
         .get("advisories")
@@ -489,7 +533,11 @@ fn rustflags(text: &str, rel: &Path, out: &mut Vec<(String, usize, Route)>) -> R
         let line = line_in_table(text, Some(&header), "rustflags");
         let tokens: Vec<String> = match flags {
             Value::String(text) => text.split_whitespace().map(ToOwned::to_owned).collect(),
-            Value::Array(items) => items.iter().filter_map(Value::as_str).map(ToOwned::to_owned).collect(),
+            Value::Array(items) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect(),
             _ => Vec::new(),
         };
         for rule in lowered_lints(&tokens) {

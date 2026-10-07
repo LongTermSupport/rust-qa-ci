@@ -6,7 +6,8 @@ use std::path::Path;
 use rust_qa::builtin::RECORD_INVALID;
 use rust_qa::record::{Exception, Record, justification_problem};
 
-const GOOD: &str = "Tests assert on panics deliberately; a panic is the failure signal in test code.";
+const GOOD: &str =
+    "Tests assert on panics deliberately; a panic is the failure signal in test code.";
 
 fn exception(rule: &str, path: &str, justification: &str) -> Exception {
     Exception {
@@ -49,15 +50,19 @@ fn record_file_parses_exceptions() {
 fn record_file_rejects_unknown_keys() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("record.toml");
-    std::fs::write(&path, "[[exception]]\nrule = \"x\"\npath = \"y\"\njustification = \"z\"\nreson = \"typo\"\n")
-        .unwrap();
+    std::fs::write(
+        &path,
+        "[[exception]]\nrule = \"x\"\npath = \"y\"\njustification = \"z\"\nreson = \"typo\"\n",
+    )
+    .unwrap();
     assert!(Record::load(&path).is_err());
 }
 
 #[test]
 fn specific_justification_is_accepted() {
     assert_eq!(justification_problem(GOOD), None);
-    let findings = record(vec![exception("dead_code", "src/a.rs", GOOD)]).validate(Path::new("qa/record.toml"));
+    let findings = record(vec![exception("dead_code", "src/a.rs", GOOD)])
+        .validate(Path::new("qa/record.toml"));
     assert!(findings.is_empty(), "{findings:?}");
 }
 
@@ -68,7 +73,16 @@ fn empty_justification_is_rejected() {
 
 #[test]
 fn generic_justifications_are_rejected() {
-    for text in ["TODO", "legacy", "Needed for now.", "temporary", "n/a", "fix later", "WIP", "false positive"] {
+    for text in [
+        "TODO",
+        "legacy",
+        "Needed for now.",
+        "temporary",
+        "n/a",
+        "fix later",
+        "WIP",
+        "false positive",
+    ] {
         assert!(justification_problem(text).is_some(), "{text} was accepted");
     }
 }
@@ -112,14 +126,23 @@ fn find_matches_rule_and_path_glob() {
         exception("clippy::unwrap_used", "tests/**", GOOD),
         exception("dead_code", "src/a.rs", GOOD),
     ]);
-    assert_eq!(rec.find("clippy::unwrap_used", Path::new("tests/x/y.rs")), Some(0));
+    assert_eq!(
+        rec.find("clippy::unwrap_used", Path::new("tests/x/y.rs")),
+        Some(0)
+    );
     assert_eq!(rec.find("dead_code", Path::new("src/a.rs")), Some(1));
     assert_eq!(rec.find("dead_code", Path::new("src/b.rs")), None);
-    assert_eq!(rec.find("clippy::expect_used", Path::new("tests/x.rs")), None);
+    assert_eq!(
+        rec.find("clippy::expect_used", Path::new("tests/x.rs")),
+        None
+    );
 }
 
 #[test]
 fn find_normalises_hyphenated_lint_names() {
     let rec = record(vec![exception("clippy::unwrap_used", "src/a.rs", GOOD)]);
-    assert_eq!(rec.find("clippy::unwrap-used", Path::new("src/a.rs")), Some(0));
+    assert_eq!(
+        rec.find("clippy::unwrap-used", Path::new("src/a.rs")),
+        Some(0)
+    );
 }

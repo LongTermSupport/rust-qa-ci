@@ -45,10 +45,18 @@ fn scope_matches_primary_span_files_by_path_prefix() {
         files: vec![PathBuf::from("crates/a/src/lib.rs")],
     };
     let root = Path::new("/ws");
-    assert!(in_scope(&diag, root, &[PathBuf::from("crates/a/src/lib.rs")]));
+    assert!(in_scope(
+        &diag,
+        root,
+        &[PathBuf::from("crates/a/src/lib.rs")]
+    ));
     assert!(in_scope(&diag, root, &[PathBuf::from("crates/a")]));
     assert!(!in_scope(&diag, root, &[PathBuf::from("crates/b")]));
-    assert!(!in_scope(&diag, root, &[PathBuf::from("crates/a/src/main.rs")]));
+    assert!(!in_scope(
+        &diag,
+        root,
+        &[PathBuf::from("crates/a/src/main.rs")]
+    ));
 }
 
 #[test]
@@ -59,7 +67,11 @@ fn absolute_span_paths_are_made_relative_to_the_root() {
         rendered: String::new(),
         files: vec![PathBuf::from("/ws/crates/a/src/lib.rs")],
     };
-    assert!(in_scope(&diag, Path::new("/ws"), &[PathBuf::from("crates/a")]));
+    assert!(in_scope(
+        &diag,
+        Path::new("/ws"),
+        &[PathBuf::from("crates/a")]
+    ));
 }
 
 #[test]
@@ -70,5 +82,9 @@ fn diagnostics_without_spans_are_never_in_scope() {
         rendered: "error: aborting".to_owned(),
         files: Vec::new(),
     };
-    assert!(!in_scope(&diag, Path::new("/ws"), &[PathBuf::from("crates/a")]));
+    assert!(!in_scope(
+        &diag,
+        Path::new("/ws"),
+        &[PathBuf::from("crates/a")]
+    ));
 }

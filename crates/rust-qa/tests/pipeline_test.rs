@@ -27,7 +27,14 @@ fn fake(failing: &[Tool]) -> Fake {
     }
 }
 
-const SELECTED: [Tool; 6] = [Tool::Fmt, Tool::Suppression, Tool::Clippy, Tool::Dylint, Tool::Test, Tool::Coverage];
+const SELECTED: [Tool; 6] = [
+    Tool::Fmt,
+    Tool::Suppression,
+    Tool::Clippy,
+    Tool::Dylint,
+    Tool::Test,
+    Tool::Coverage,
+];
 
 #[test]
 fn everything_runs_in_order_when_all_pass() {
@@ -43,7 +50,10 @@ fn detector_failure_runs_remaining_detectors_but_no_runner() {
     let report = execute(&SELECTED, &mut exec, false);
     assert!(!report.passed);
     assert!(report.stopped_before_runners);
-    assert_eq!(exec.ran, vec![Tool::Fmt, Tool::Suppression, Tool::Clippy, Tool::Dylint]);
+    assert_eq!(
+        exec.ran,
+        vec![Tool::Fmt, Tool::Suppression, Tool::Clippy, Tool::Dylint]
+    );
 }
 
 #[test]
@@ -59,7 +69,10 @@ fn format_failure_still_runs_detectors_but_no_runner() {
     let mut exec = fake(&[Tool::Fmt]);
     let report = execute(&SELECTED, &mut exec, false);
     assert!(report.stopped_before_runners);
-    assert_eq!(exec.ran, vec![Tool::Fmt, Tool::Suppression, Tool::Clippy, Tool::Dylint]);
+    assert_eq!(
+        exec.ran,
+        vec![Tool::Fmt, Tool::Suppression, Tool::Clippy, Tool::Dylint]
+    );
 }
 
 #[test]

@@ -7,7 +7,8 @@ use crate::defences::Defence;
 use crate::record::Record;
 
 /// Opening marker of the generated region.
-pub const BEGIN: &str = "<!-- BEGIN rust-qa-ci generated defences: run `rust-qa summary` to refresh; do not edit -->";
+pub const BEGIN: &str =
+    "<!-- BEGIN rust-qa-ci generated defences: run `rust-qa summary` to refresh; do not edit -->";
 /// Closing marker of the generated region.
 pub const END: &str = "<!-- END rust-qa-ci generated defences -->";
 
@@ -16,7 +17,9 @@ pub const END: &str = "<!-- END rust-qa-ci generated defences -->";
 pub fn render(defences: &[Defence], record: &Record) -> String {
     let mut out = String::new();
     out.push_str(BEGIN);
-    out.push_str("\n\nActive defences. Failures print these ids unaltered; resolve any id offline with ");
+    out.push_str(
+        "\n\nActive defences. Failures print these ids unaltered; resolve any id offline with ",
+    );
     out.push_str("`rust-qa rule-doc <id>`. Exceptions only via the project record, with a justification.\n\n");
     for defence in defences {
         let _ = writeln!(
