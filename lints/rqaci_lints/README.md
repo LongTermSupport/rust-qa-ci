@@ -9,6 +9,7 @@ arguments substituted) rather than source text.
 | Lint | Level | Doc |
 | --- | --- | --- |
 | `rqaci_sensitive_debug_derive` | deny | [rqaci_sensitive_debug_derive.md](../../crates/rust-qa/docs/rules/rqaci_sensitive_debug_derive.md) |
+| `rqaci_suppression_generated` | deny | [rqaci_suppression_generated.md](../../crates/rust-qa/docs/rules/rqaci_suppression_generated.md) |
 
 ## Development
 

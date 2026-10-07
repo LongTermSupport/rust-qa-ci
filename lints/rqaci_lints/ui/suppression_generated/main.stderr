@@ -1,0 +1,30 @@
+error: macro-generated `allow(clippy::unwrap_used)` silences code written here
+  --> $DIR/main.rs:29:1
+   |
+LL | quiet!(allow, pub fn first(value: Option<u8>) -> u8 { value.unwrap() });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the attribute exists only after macro expansion, so the source suppression scan cannot see or record it
+   = help: fix the code so the lint passes, or make the macro leave lint levels to the caller
+   = note: `#[deny(rqaci_suppression_generated)]` on by default
+
+error: macro-generated `expect(dead_code)` silences code written here
+  --> $DIR/main.rs:32:1
+   |
+LL | silence!(dead_code => fn second() -> u8 { 2 });
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the attribute exists only after macro expansion, so the source suppression scan cannot see or record it
+   = help: fix the code so the lint passes, or make the macro leave lint levels to the caller
+
+error: macro-generated `allow(unused_variables)` silences code written here
+  --> $DIR/main.rs:36:5
+   |
+LL |     quiet_let!(allow, unused = 3);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the attribute exists only after macro expansion, so the source suppression scan cannot see or record it
+   = help: fix the code so the lint passes, or make the macro leave lint levels to the caller
+
+error: aborting due to 3 previous errors
+

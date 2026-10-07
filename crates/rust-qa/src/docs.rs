@@ -78,6 +78,10 @@ static BUNDLED: &[(&str, &str)] = &[
         "rqaci_sensitive_debug_derive",
         include_str!("../docs/rules/rqaci_sensitive_debug_derive.md"),
     ),
+    (
+        "rqaci_suppression_generated",
+        include_str!("../docs/rules/rqaci_suppression_generated.md"),
+    ),
     ("warnings", include_str!("../docs/rules/warnings.md")),
     (
         "rqaci.ast.hardcoded-temp-path",
