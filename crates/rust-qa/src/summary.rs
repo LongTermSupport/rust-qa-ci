@@ -4,6 +4,7 @@
 use std::fmt::Write as _;
 
 use crate::defences::Defence;
+use crate::policy::{RecordPolicy, Status};
 use crate::record::Record;
 
 /// Opening marker of the generated region.
@@ -14,7 +15,7 @@ pub const END: &str = "<!-- END rust-qa-ci generated defences -->";
 
 /// Renders the region, markers included, ending with a newline.
 #[must_use]
-pub fn render(defences: &[Defence], record: &Record) -> String {
+pub fn render(defences: &[Defence], record: &Record, policy: &RecordPolicy) -> String {
     let mut out = String::new();
     out.push_str(BEGIN);
     out.push_str(
@@ -31,12 +32,28 @@ pub fn render(defences: &[Defence], record: &Record) -> String {
             defence.id
         );
     }
-    out.push_str("\nProject-record exceptions:\n\n");
+    out.push_str(
+        "\nProject-record exceptions (prefer an in-source `#[expect(lint, reason = \"...\")]`, ",
+    );
+    out.push_str("which fails once the lint stops firing):\n\n");
     if record.exceptions.is_empty() {
         out.push_str("- none\n");
     }
     for exception in &record.exceptions {
-        let _ = writeln!(out, "- `{}` at `{}`", exception.rule, exception.path);
+        let review_by = exception.review_by.map_or_else(
+            || "no review date".to_owned(),
+            |date| format!("review by {date}"),
+        );
+        let model = exception.added_by_model.as_deref().unwrap_or("unknown");
+        let _ = writeln!(
+            out,
+            "- `{}` at `{}` ({review_by}, added by {model})",
+            exception.rule, exception.path
+        );
+    }
+    out.push_str("\nRecord budget (`rust-qa record list`):\n\n");
+    for line in Status::of(record, policy).to_string().lines() {
+        let _ = writeln!(out, "- {line}");
     }
     out.push('\n');
     out.push_str(END);

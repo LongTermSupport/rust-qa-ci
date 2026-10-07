@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use rust_qa::builtin::RECORD_INVALID;
+use rust_qa::date::Date;
 use rust_qa::record::{Exception, Record, justification_problem};
 
 const GOOD: &str =
@@ -15,11 +16,51 @@ fn exception(rule: &str, path: &str, justification: &str) -> Exception {
         path: path.to_owned(),
         justification: justification.to_owned(),
         decided_by: Some("owner".to_owned()),
+        ..Exception::default()
     }
 }
 
 fn record(exceptions: Vec<Exception>) -> Record {
-    Record { exceptions }
+    Record {
+        ratchet: None,
+        exceptions,
+    }
+}
+
+#[test]
+fn record_file_parses_the_ratchet_and_provenance_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("record.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[ratchet]\nhigh_water = 1\ndecided_by = \"owner\"\ndecided_on = 2026-10-01\nreason = \"{GOOD}\"\n\n\
+             [[exception]]\nrule = \"dead_code\"\npath = \"src/a.rs\"\njustification = \"{GOOD}\"\n\
+             decided_by = \"owner\"\nadded_by_model = \"human\"\ndecided_on = 2026-10-01\n\
+             review_by = \"2026-12-01\"\npolicy = false\n"
+        ),
+    )
+    .unwrap();
+    let loaded = Record::load(&path).unwrap();
+    let ratchet = loaded.ratchet.unwrap();
+    assert_eq!(ratchet.high_water, 1);
+    assert_eq!(ratchet.decided_on, Date::parse("2026-10-01").unwrap());
+    let entry = &loaded.exceptions[0];
+    assert_eq!(entry.added_by_model.as_deref(), Some("human"));
+    assert_eq!(entry.review_by, Date::parse("2026-12-01"));
+    assert!(!entry.policy);
+}
+
+#[test]
+fn record_file_rejects_malformed_dates() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("record.toml");
+    std::fs::write(
+        &path,
+        "[[exception]]\nrule = \"x\"\npath = \"y\"\njustification = \"z\"\nreview_by = \"next month\"\n",
+    )
+    .unwrap();
+    assert!(Record::load(&path).is_err());
 }
 
 #[test]

@@ -4,12 +4,24 @@
 //! File format (`qa/record.toml` by default):
 //!
 //! ```toml
+//! [ratchet]                      # ceiling on the entry count; see `crate::policy`
+//! high_water = 1
+//! decided_by = "owner"
+//! decided_on = 2026-01-15
+//! reason = "why the ceiling is at this value"
+//!
 //! [[exception]]
 //! rule = "clippy::unwrap_used"   # identifier exactly as the defence prints it
-//! path = "tests/**"              # file or glob, relative to the workspace root
+//! path = "src/parser.rs"         # one file; globs need `policy = true`
 //! justification = "why the rule is wrong here and what makes the exception safe"
-//! decided_by = "owner"           # optional; never empty when present
+//! decided_by = "owner"
+//! added_by_model = "human"       # or the model id that wrote the entry
+//! decided_on = 2026-01-15
+//! review_by = 2026-04-15
 //! ```
+//!
+//! This module checks structure and wording; budgets, deadlines, trust tiers and the ratchet are
+//! checked by [`crate::policy`].
 
 use std::path::Path;
 
@@ -17,6 +29,7 @@ use serde::Deserialize;
 
 use crate::Error;
 use crate::builtin::RECORD_INVALID;
+use crate::date::Date;
 use crate::finding::Finding;
 
 /// Justifications shorter than this many characters are rejected as not explaining anything.
@@ -55,13 +68,31 @@ const PLACEHOLDERS: [&str; 4] = ["todo", "tbd", "fixme", "xxx"];
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
+    /// Signed ceiling on the number of exceptions.
+    #[serde(default)]
+    pub ratchet: Option<Ratchet>,
     /// Exceptions in file order.
     #[serde(default, rename = "exception")]
     pub exceptions: Vec<Exception>,
 }
 
+/// The committed ceiling on the entry count: lowered automatically, raised only by a signed
+/// decision.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ratchet {
+    /// Maximum number of exceptions.
+    pub high_water: usize,
+    /// Human (from the configured deciders) who set the ceiling.
+    pub decided_by: String,
+    /// When the ceiling was last raised or adopted.
+    pub decided_on: Date,
+    /// Why the ceiling is at this value.
+    pub reason: String,
+}
+
 /// One decided exception.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Exception {
     /// Rule identifier as printed by the defence.
@@ -70,9 +101,21 @@ pub struct Exception {
     pub path: String,
     /// Why the exception is correct.
     pub justification: String,
-    /// Who decided it.
+    /// Who decided it (required by the policy check).
     #[serde(default)]
     pub decided_by: Option<String>,
+    /// Model id that wrote the entry, or `human` (required by the policy check).
+    #[serde(default)]
+    pub added_by_model: Option<String>,
+    /// When it was decided (required by the policy check).
+    #[serde(default)]
+    pub decided_on: Option<Date>,
+    /// When it must be re-decided or removed (required by the policy check).
+    #[serde(default)]
+    pub review_by: Option<Date>,
+    /// Marks a deliberately broad (glob) exception, which has its own, stricter cap.
+    #[serde(default)]
+    pub policy: bool,
 }
 
 impl Record {

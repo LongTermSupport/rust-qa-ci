@@ -7,12 +7,14 @@
 pub mod ast_grep;
 pub mod builtin;
 pub mod config;
+pub mod date;
 pub mod defences;
 pub mod diagnostics;
 pub mod docs;
 pub mod finding;
 pub mod manifest;
 pub mod pipeline;
+pub mod policy;
 pub mod record;
 pub mod summary;
 pub mod suppression;

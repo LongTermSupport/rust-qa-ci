@@ -43,8 +43,20 @@ static BUNDLED: &[(&str, &str)] = &[
         include_str!("../docs/rules/rqaci.docs.dangling.md"),
     ),
     (
+        "rqaci.record.budget",
+        include_str!("../docs/rules/rqaci.record.budget.md"),
+    ),
+    (
+        "rqaci.record.expired",
+        include_str!("../docs/rules/rqaci.record.expired.md"),
+    ),
+    (
         "rqaci.record.invalid",
         include_str!("../docs/rules/rqaci.record.invalid.md"),
+    ),
+    (
+        "rqaci.record.ratchet",
+        include_str!("../docs/rules/rqaci.record.ratchet.md"),
     ),
     (
         "rqaci.record.stale",
@@ -53,6 +65,10 @@ static BUNDLED: &[(&str, &str)] = &[
     (
         "rqaci.summary.stale",
         include_str!("../docs/rules/rqaci.summary.stale.md"),
+    ),
+    (
+        "rqaci.suppression.allow",
+        include_str!("../docs/rules/rqaci.suppression.allow.md"),
     ),
     (
         "rqaci.suppression.unrecorded",
