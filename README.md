@@ -109,6 +109,12 @@ Prefer an in-source `#[expect(lint, reason = "...")]`: rustc fails it as soon as
 firing, so the exception removes itself. `#[allow]` fails `rqaci.suppression.allow` even when
 recorded.
 
+The `suppression` detector reads source text. A lint attribute that a workspace macro assembles
+from fragments (`#[$level(lint)]`, a caller-supplied lint name, a workspace proc macro) only
+exists after expansion; the bundled dylint lint `rqaci_suppression_generated` reports those that
+cover caller-written code, and its own suppression is a literal, recorded `expect`, so every
+route ends in the record.
+
 ### Anti-bloat controls
 
 Exception records (baselines, allowlists) grow by default: each entry is cheap to add and nobody
@@ -233,8 +239,8 @@ A tool whose own configuration is absent (no dylint metadata, no `deny.toml`; fo
 Pin an exact tag. Install the binary and the pinned external tools:
 
 ```bash
-cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.2.0 rust-qa
-git clone --depth 1 --branch v0.2.0 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
+cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.3.0 rust-qa
+git clone --depth 1 --branch v0.3.0 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
 /tmp/rust-qa-ci/scripts/install-tools.sh            # versions from tools.lock
 ```
 
@@ -243,7 +249,7 @@ Bundled type-aware rules load from the same tag:
 ```toml
 [workspace.metadata.dylint]
 libraries = [
-    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.2.0", pattern = "lints/rqaci_lints" },
+    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.3.0", pattern = "lints/rqaci_lints" },
 ]
 ```
 

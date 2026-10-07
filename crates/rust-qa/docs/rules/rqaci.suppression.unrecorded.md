@@ -41,6 +41,8 @@ reason in one discoverable place, otherwise defences erode silently one line at 
 Suppressions are syntax and configuration by definition: types cannot add or remove one. The guard
 parses every Rust file fully (not a text search), so string literals and doc text are not mistaken
 for suppressions, and walks macro token trees so attributes inside macro bodies are found.
+Attributes that a macro assembles from fragments exist only after expansion; the bundled dylint
+lint `rqaci_suppression_generated` covers those.
 
 ## Suppression
 
