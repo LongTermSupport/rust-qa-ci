@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Public-safety scan of the commit message. Enable with: git config core.hooksPath .githooks
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/public-safety-scan.sh" --message "$1"

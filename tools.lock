@@ -1,0 +1,20 @@
+# Pinned versions of every external QA tool, installed by scripts/install-tools.sh.
+# Format: one `name = "version"` per line under [prebuilt] (cargo-binstall) or [source]
+# (cargo install --locked; used where prebuilt binaries need a newer glibc than common CI images).
+# The Rust toolchains themselves are pinned by rust-toolchain.toml files, not here.
+
+[prebuilt]
+cargo-nextest = "0.9.146"
+cargo-llvm-cov = "0.9.1"
+cargo-deny = "0.20.2"
+cargo-audit = "0.22.2"
+cargo-machete = "0.9.2"
+ast-grep = "0.45.3"
+
+[source]
+cargo-dylint = "6.1.0"
+dylint-link = "6.1.0"
+cargo-mutants = "27.1.0"
+
+[bootstrap]
+cargo-binstall = "1.25.2"
