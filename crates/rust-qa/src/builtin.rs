@@ -22,9 +22,13 @@ pub const SUMMARY_STALE: &str = "rqaci.summary.stale";
 
 /// A listed defence identifier has no resolvable documentation.
 pub const DOCS_DANGLING: &str = "rqaci.docs.dangling";
+/// A page in the project's documentation directory documents no listed identifier.
+pub const DOCS_ORPHAN: &str = "rqaci.docs.orphan";
+/// A project ast-grep rule has no test case with both valid and invalid code.
+pub const RULES_UNTESTED: &str = "rqaci.rules.untested";
 
 /// Every built-in identifier, for listing and documentation checks.
-pub const ALL: [&str; 9] = [
+pub const ALL: [&str; 11] = [
     RECORD_INVALID,
     RECORD_STALE,
     RECORD_BUDGET,
@@ -34,4 +38,25 @@ pub const ALL: [&str; 9] = [
     SUPPRESSION_ALLOW,
     SUMMARY_STALE,
     DOCS_DANGLING,
+    DOCS_ORPHAN,
+    RULES_UNTESTED,
 ];
+
+/// One line saying what a built-in identifier guards, for the listing and the agent summary.
+#[must_use]
+pub fn describe(id: &str) -> &'static str {
+    match id {
+        RECORD_INVALID => "every project-record exception is well formed, attributed and justified",
+        RECORD_STALE => "every project-record exception still covers something",
+        RECORD_BUDGET => "the project record stays within its budgets",
+        RECORD_RATCHET => "the project record grows only by a signed decision",
+        RECORD_EXPIRED => "no project-record exception is past its review date",
+        SUPPRESSION_UNRECORDED => "every suppression has an exception in the project record",
+        SUPPRESSION_ALLOW => "lints are silenced with `expect`, never `allow`",
+        SUMMARY_STALE => "the generated agent summary is current",
+        DOCS_DANGLING => "every listed identifier resolves to documentation",
+        DOCS_ORPHAN => "every documentation page belongs to a listed identifier",
+        RULES_UNTESTED => "every project ast-grep rule has valid and invalid test cases",
+        _ => "",
+    }
+}

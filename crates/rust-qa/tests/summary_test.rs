@@ -4,7 +4,7 @@
 use rust_qa::date::Date;
 use rust_qa::defences::{Defence, Engine};
 use rust_qa::policy::RecordPolicy;
-use rust_qa::record::{Exception, Record};
+use rust_qa::record::{Covers, Exception, Record};
 use rust_qa::summary::{BEGIN, END, render, splice};
 
 fn defences() -> Vec<Defence> {
@@ -14,12 +14,14 @@ fn defences() -> Vec<Defence> {
             engine: Engine::Clippy,
             level: "deny".to_owned(),
             origin: "Cargo.toml:9".to_owned(),
+            description: String::new(),
         },
         Defence {
             id: "example_type_rule".to_owned(),
             engine: Engine::Dylint,
             level: "deny".to_owned(),
             origin: "dylint library x".to_owned(),
+            description: "a value of a secret type is printed".to_owned(),
         },
     ]
 }
@@ -48,7 +50,7 @@ fn render_is_delimited_with_one_line_per_defence_and_doc_route() {
     ));
     assert!(
         region.contains(
-            "- `example_type_rule` (dylint, deny): `rust-qa rule-doc example_type_rule`\n"
+            "- `example_type_rule` (dylint, deny): a value of a secret type is printed. `rust-qa rule-doc example_type_rule`\n"
         )
     );
     assert!(region.contains(
@@ -88,4 +90,15 @@ fn splice_replaces_only_the_region_and_is_idempotent() {
     assert!(once.ends_with("\n\nafter\n"));
     assert!(!once.contains("old content"));
     assert_eq!(splice(&once, &region), once);
+}
+
+#[test]
+fn a_findings_exception_says_what_it_covers() {
+    let mut record = record();
+    record.exceptions[0].covers = Covers::Findings;
+    let region = render(&defences(), &record, &RecordPolicy::default());
+    assert!(
+        region.contains("(review by 2027-01-31, added by human, covers findings)\n"),
+        "{region}"
+    );
 }

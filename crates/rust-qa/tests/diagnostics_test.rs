@@ -10,15 +10,28 @@ fn message(code: &str, level: &str, file: &str) -> String {
         "reason": "compiler-message",
         "message": {
             "rendered": format!("{level}: thing\n --> {file}:1:1\n"),
+            "message": "thing",
             "level": level,
             "code": {"code": code, "explanation": null},
             "spans": [
-                {"file_name": file, "is_primary": true, "line_start": 1},
+                {"file_name": file, "is_primary": true, "line_start": 1, "column_start": 5},
                 {"file_name": "other.rs", "is_primary": false, "line_start": 2}
             ]
         }
     })
     .to_string()
+}
+
+fn blank() -> Diagnostic {
+    Diagnostic {
+        code: None,
+        level: String::new(),
+        rendered: String::new(),
+        files: Vec::new(),
+        message: String::new(),
+        line: 0,
+        column: 0,
+    }
 }
 
 #[test]
@@ -43,6 +56,7 @@ fn scope_matches_primary_span_files_by_path_prefix() {
         level: "error".to_owned(),
         rendered: String::new(),
         files: vec![PathBuf::from("crates/a/src/lib.rs")],
+        ..blank()
     };
     let root = Path::new("/ws");
     assert!(in_scope(
@@ -66,6 +80,7 @@ fn absolute_span_paths_are_made_relative_to_the_root() {
         level: "error".to_owned(),
         rendered: String::new(),
         files: vec![PathBuf::from("/ws/crates/a/src/lib.rs")],
+        ..blank()
     };
     assert!(in_scope(
         &diag,
@@ -90,11 +105,39 @@ fn diagnostics_without_spans_are_never_in_scope() {
         code: None,
         level: "error".to_owned(),
         rendered: "error: aborting".to_owned(),
-        files: Vec::new(),
+        ..blank()
     };
     assert!(!in_scope(
         &diag,
         Path::new("/ws"),
         &[PathBuf::from("crates/a")]
     ));
+}
+
+#[test]
+fn the_message_and_the_first_primary_position_are_kept() {
+    let diags = parse_cargo_messages(&message("x", "warning", "src/a.rs"));
+    assert_eq!(diags[0].message, "thing");
+    assert_eq!((diags[0].line, diags[0].column), (1, 5));
+}
+
+#[test]
+fn files_reported_from_a_further_workspace_are_named_from_the_root() {
+    let diag = Diagnostic {
+        files: vec![
+            PathBuf::from("src/lib.rs"),
+            PathBuf::from("/ws/lints/src/x.rs"),
+            PathBuf::from("/elsewhere/dep.rs"),
+        ],
+        ..blank()
+    };
+    let under = diag.under(Path::new("/ws"), Path::new("lints"));
+    assert_eq!(
+        under.files,
+        vec![
+            PathBuf::from("lints/src/lib.rs"),
+            PathBuf::from("lints/src/x.rs"),
+            PathBuf::from("/elsewhere/dep.rs")
+        ]
+    );
 }

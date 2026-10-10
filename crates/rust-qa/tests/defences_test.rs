@@ -44,6 +44,7 @@ fn example_lint() -> Vec<DylintLint> {
         library: "example_lints".to_owned(),
         name: "example_type_rule".to_owned(),
         level: "deny".to_owned(),
+        description: "a value of a secret type is printed".to_owned(),
     }]
 }
 
@@ -179,4 +180,73 @@ fn ast_grep_rules_are_read_from_rule_dirs() {
         .map(|r| (r.id.as_str(), r.severity.as_str()))
         .collect();
     assert_eq!(ids, vec![("no-println", "error"), ("prefer-x", "hint")]);
+}
+
+#[test]
+fn dylint_list_descriptions_are_kept() {
+    let lints = parse_dylint_list("lib_one\n    rule_a    deny    finds the first thing\n");
+    assert_eq!(lints[0].description, "finds the first thing");
+}
+
+#[test]
+fn defences_carry_what_they_guard_where_the_configuration_says() {
+    let dir = workspace();
+    let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
+    let find = |id: &str| defences.iter().find(|d| d.id == id).unwrap();
+    assert_eq!(
+        find("example_type_rule").description,
+        "a value of a secret type is printed"
+    );
+    assert_ne!(find("rqaci.suppression.unrecorded").description, "");
+    assert_ne!(find("rqaci.ast.hardcoded-temp-path").description, "");
+}
+
+#[test]
+fn forced_dylint_lints_are_listed_as_blocking_whatever_their_level() {
+    let dir = workspace();
+    let mut config = Config::default();
+    config.dylint.force_warn = true;
+    let defences = enumerate(dir.path(), &config, FAKE_DYLINT).unwrap();
+    let lint = defences
+        .iter()
+        .find(|d| d.id == "example_type_rule")
+        .unwrap();
+    assert_eq!(lint.level, "forced; every finding blocks");
+}
+
+#[test]
+fn project_stages_and_the_rules_they_report_are_listed() {
+    let dir = workspace();
+    let config: Config = toml::from_str(
+        r#"
+[[stage]]
+name = "web-lint"
+phase = "detectors"
+says = "The web code's own rules"
+fix = "Follow each rule's page"
+command = ["true"]
+output = "findings"
+rules = ["echo", '[{"id": "WEB-RULE", "description": "what it finds"}]']
+"#,
+    )
+    .unwrap();
+    let defences = enumerate(dir.path(), &config, FAKE_DYLINT).unwrap();
+    let stage = defences.iter().find(|d| d.id == "web-lint").unwrap();
+    assert_eq!(stage.engine, Engine::Stage);
+    assert_eq!(stage.level, "detectors");
+    assert_eq!(stage.description, "The web code's own rules");
+    let rule = defences.iter().find(|d| d.id == "WEB-RULE").unwrap();
+    assert_eq!(rule.engine, Engine::Stage);
+    assert_eq!(rule.origin, "stage web-lint");
+    assert_eq!(rule.description, "what it finds");
+}
+
+#[test]
+fn project_ast_grep_rules_bring_the_test_case_defence() {
+    let dir = workspace();
+    let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
+    assert!(defences.iter().any(|d| d.id == "rqaci.rules.untested"));
+    std::fs::remove_file(dir.path().join("sgconfig.yml")).unwrap();
+    let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
+    assert!(defences.iter().all(|d| d.id != "rqaci.rules.untested"));
 }

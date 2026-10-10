@@ -13,7 +13,7 @@ use rust_qa::policy::{
     Cosign, Input, RecordPolicy, Status, Tier, gate, is_broad, looks_automated, previous_record,
     remove_exceptions, review, set_high_water,
 };
-use rust_qa::record::{Exception, Ratchet, Record};
+use rust_qa::record::{Covers, Exception, Ratchet, Record};
 
 const GOOD: &str = "The generated parser module is regenerated from the grammar on every build.";
 const DECIDER: &str = "alice";
@@ -58,6 +58,7 @@ fn entry(rule: &str, path: &str) -> Exception {
         decided_on: Some(today()),
         review_by: Some(today().add_days(60)),
         policy: false,
+        covers: Covers::Suppressions,
     }
 }
 

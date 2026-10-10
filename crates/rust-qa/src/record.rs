@@ -116,6 +116,34 @@ pub struct Exception {
     /// Marks a deliberately broad (glob) exception, which has its own, stricter cap.
     #[serde(default)]
     pub policy: bool,
+    /// What the exception licenses: an in-source suppression (the default), or the findings a
+    /// detector reports at the path, with nothing written in the source.
+    #[serde(default)]
+    pub covers: Covers,
+}
+
+/// What an exception licenses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Covers {
+    /// A suppression written in the source or configuration (an `expect` attribute, an ast-grep
+    /// ignore comment, a lowered lint level); the suppression guard matches it.
+    #[default]
+    Suppressions,
+    /// The findings a detector that applies the record (dylint, ast-grep, a project stage with
+    /// `output = "findings"`) reports at the path; nothing in the source silences them.
+    Findings,
+}
+
+impl Covers {
+    /// Lower-case name, as written in the record.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Suppressions => "suppressions",
+            Self::Findings => "findings",
+        }
+    }
 }
 
 impl Record {
@@ -168,16 +196,51 @@ impl Record {
         findings
     }
 
-    /// Index of the first exception covering `rule` at `path` (relative to the root).
+    /// Index of the first exception licensing a suppression of `rule` at `path` (relative to the
+    /// root).
     #[must_use]
     pub fn find(&self, rule: &str, path: &Path) -> Option<usize> {
         let wanted = normalise_rule(rule);
         self.exceptions.iter().position(|exception| {
-            normalise_rule(&exception.rule) == wanted
-                && globset::Glob::new(&exception.path)
-                    .is_ok_and(|glob| glob.compile_matcher().is_match(path))
+            exception.covers == Covers::Suppressions
+                && normalise_rule(&exception.rule) == wanted
+                && covers_path(exception, path)
         })
     }
+
+    /// Index of the first exception covering the findings of `rule` at `path` (relative to the
+    /// root). Rule names compare as [`same_rule`] does.
+    #[must_use]
+    pub fn find_finding(&self, rule: &str, path: &Path) -> Option<usize> {
+        self.exceptions.iter().position(|exception| {
+            exception.covers == Covers::Findings
+                && same_rule(&exception.rule, rule)
+                && covers_path(exception, path)
+        })
+    }
+}
+
+fn covers_path(exception: &Exception, path: &Path) -> bool {
+    globset::Glob::new(&exception.path).is_ok_and(|glob| glob.compile_matcher().is_match(path))
+}
+
+/// Whether two spellings name the same rule: equal after [`normalise_rule`], or equal as lint
+/// names, which compare without case and with `-` for `_` (a dylint lint `my_rule` is documented
+/// and recorded as `MY-RULE` as readily as `my_rule`). An `ast-grep::` prefix, as suppressions of
+/// ast-grep rules are recorded, is ignored.
+#[must_use]
+pub fn same_rule(a: &str, b: &str) -> bool {
+    normalise_rule(a) == normalise_rule(b) || lint_key(a) == lint_key(b)
+}
+
+/// A rule name without case, `-` read as `_`, and any `ast-grep::` prefix dropped.
+#[must_use]
+pub fn lint_key(rule: &str) -> String {
+    let rule = rule.trim();
+    rule.strip_prefix("ast-grep::")
+        .unwrap_or(rule)
+        .to_lowercase()
+        .replace('-', "_")
 }
 
 /// Canonical form of a rule identifier: rustc, Clippy and rustdoc lint names use underscores, while

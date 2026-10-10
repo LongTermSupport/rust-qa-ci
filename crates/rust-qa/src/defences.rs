@@ -1,6 +1,6 @@
 //! Active defence enumeration, derived from the configuration in force (Cargo `[lints]` tables,
-//! dylint libraries, ast-grep rule directories and the bundled ast-grep pack, `qa/rust-qa.toml`),
-//! never from a hand-kept list.
+//! dylint libraries, ast-grep rule directories and the bundled ast-grep pack, `qa/rust-qa.toml` and
+//! its project stages, with the rules those stages report), never from a hand-kept list.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,6 +9,7 @@ use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::config::{Config, MutantsMode};
 use crate::manifest::{Level, has_dylint_metadata, lint_settings, workspace_files};
+use crate::stage::{Stage, StageRule, parse_rules};
 use crate::{Error, ast_grep, builtin, read_to_string};
 
 /// What enforces a defence.
@@ -28,6 +29,8 @@ pub enum Engine {
     AstGrep,
     /// Runner gate (executes code or audits dependencies); not a static detector.
     Runner,
+    /// A project stage, or a rule one reports.
+    Stage,
 }
 
 impl Engine {
@@ -42,6 +45,7 @@ impl Engine {
             Self::Dylint => "dylint",
             Self::AstGrep => "ast-grep",
             Self::Runner => "runner",
+            Self::Stage => "stage",
         }
     }
 }
@@ -57,6 +61,8 @@ pub struct Defence {
     pub level: String,
     /// Where it is configured.
     pub origin: String,
+    /// What it guards, where the configuration says (empty otherwise).
+    pub description: String,
 }
 
 /// A lint reported by `cargo dylint list`.
@@ -68,6 +74,8 @@ pub struct DylintLint {
     pub name: String,
     /// Default level.
     pub level: String,
+    /// What the lint finds.
+    pub description: String,
 }
 
 /// An ast-grep rule.
@@ -79,6 +87,8 @@ pub struct AstGrepRule {
     pub severity: String,
     /// Rule file relative to the root.
     pub file: PathBuf,
+    /// The rule's message.
+    pub message: String,
 }
 
 /// Lists every active defence for the workspace at `root`.
@@ -95,56 +105,34 @@ pub fn enumerate(
 ) -> Result<Vec<Defence>, Error> {
     let mut out = Collector::default();
     let tools = &config.tools;
+    let builtin = |out: &mut Collector, id: &str, origin: &str| {
+        out.push(id, Engine::Builtin, "deny", origin, builtin::describe(id));
+    };
     if tools.record {
-        out.push(
-            builtin::RECORD_INVALID,
-            Engine::Builtin,
-            "deny",
-            "rust-qa record",
-        );
         for id in [
+            builtin::RECORD_INVALID,
             builtin::RECORD_BUDGET,
             builtin::RECORD_RATCHET,
             builtin::RECORD_EXPIRED,
         ] {
-            out.push(id, Engine::Builtin, "deny", "rust-qa record");
+            builtin(&mut out, id, "rust-qa record");
         }
     }
     if tools.suppression {
-        out.push(
+        for id in [
             builtin::SUPPRESSION_UNRECORDED,
-            Engine::Builtin,
-            "deny",
-            "rust-qa suppression",
-        );
-        out.push(
             builtin::SUPPRESSION_ALLOW,
-            Engine::Builtin,
-            "deny",
-            "rust-qa suppression",
-        );
-        out.push(
             builtin::RECORD_STALE,
-            Engine::Builtin,
-            "deny",
-            "rust-qa suppression",
-        );
+        ] {
+            builtin(&mut out, id, "rust-qa suppression");
+        }
     }
     if tools.summary && config.summary.file.is_some() {
-        out.push(
-            builtin::SUMMARY_STALE,
-            Engine::Builtin,
-            "deny",
-            "rust-qa summary",
-        );
+        builtin(&mut out, builtin::SUMMARY_STALE, "rust-qa summary");
     }
     if tools.docs {
-        out.push(
-            builtin::DOCS_DANGLING,
-            Engine::Builtin,
-            "deny",
-            "rust-qa docs",
-        );
+        builtin(&mut out, builtin::DOCS_DANGLING, "rust-qa docs");
+        builtin(&mut out, builtin::DOCS_ORPHAN, "rust-qa docs");
     }
     if tools.clippy {
         out.push(
@@ -152,39 +140,123 @@ pub fn enumerate(
             Engine::Rustc,
             "deny (-D warnings)",
             "rust-qa clippy",
+            "every compiler and Clippy warning fails the gate",
         );
         lint_tables(root, config, &mut out)?;
     }
     if tools.dylint && has_dylint_metadata(root)? {
-        for lint in dylint(root)? {
-            let origin = format!("dylint library {}", lint.library);
-            out.push(&lint.name, Engine::Dylint, &lint.level, &origin);
-        }
+        dylint_defences(config, dylint(root)?, &mut out);
     }
     if tools.ast_grep && root.join("sgconfig.yml").is_file() {
-        for rule in ast_grep_rules(root)? {
+        let rules = ast_grep_rules(root)?;
+        if !rules.is_empty() {
+            builtin(&mut out, builtin::RULES_UNTESTED, "rust-qa ast-grep");
+        }
+        for rule in rules {
             if rule.severity == "error" {
                 out.push(
                     &rule.id,
                     Engine::AstGrep,
                     "error",
                     &rule.file.display().to_string(),
+                    &rule.message,
                 );
             }
         }
     }
     if tools.ast_grep && config.ast_grep.bundled {
-        for id in ast_grep::bundled_ids() {
+        for rule in ast_grep::bundled() {
             out.push(
-                id,
+                rule.id,
                 Engine::AstGrep,
                 "error",
                 "rust-qa bundled ast-grep pack",
+                &ast_grep::message(rule),
             );
         }
     }
+    stage_defences(root, config, &mut out)?;
     runners(root, config, &mut out);
     Ok(out.defences)
+}
+
+fn dylint_defences(config: &Config, lints: Vec<DylintLint>, out: &mut Collector) {
+    for lint in lints {
+        let level = if config.dylint.force_warn {
+            "forced; every finding blocks".to_owned()
+        } else {
+            lint.level.clone()
+        };
+        let origin = format!("dylint library {}", lint.library);
+        out.push(
+            &lint.name,
+            Engine::Dylint,
+            &level,
+            &origin,
+            &lint.description,
+        );
+    }
+}
+
+fn stage_defences(root: &Path, config: &Config, out: &mut Collector) -> Result<(), Error> {
+    for stage in &config.stages {
+        out.push(
+            &stage.name,
+            Engine::Stage,
+            stage.phase.name(),
+            "qa/rust-qa.toml [[stage]]",
+            &stage.says,
+        );
+        if stage.rules.is_some() {
+            let origin = format!("stage {}", stage.name);
+            for rule in stage_rules(root, stage)? {
+                out.push(&rule.id, Engine::Stage, "error", &origin, &rule.description);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The rules a project stage reports, from its `rules` command (none without one).
+///
+/// # Errors
+/// Returns an error when the command cannot be run, fails, or prints something other than a JSON
+/// list of rules.
+pub fn stage_rules(root: &Path, stage: &Stage) -> Result<Vec<StageRule>, Error> {
+    let Some((program, args)) = stage.rules.as_ref().and_then(|argv| argv.split_first()) else {
+        return Ok(Vec::new());
+    };
+    let line = format!("{program} {}", args.join(" "));
+    let cmd = crate::tools::Cmd {
+        program: program.clone(),
+        args: args.to_vec(),
+        dir: stage.dir.clone(),
+        own_toolchain: stage.dir.is_some(),
+        env: Vec::new(),
+    };
+    let output = cmd
+        .command()
+        .current_dir(
+            stage
+                .dir
+                .as_ref()
+                .map_or_else(|| root.to_path_buf(), |d| root.join(d)),
+        )
+        .output()
+        .map_err(|e| Error::Command {
+            command: line.clone(),
+            message: e.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(Error::Command {
+            command: line,
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    parse_rules(&String::from_utf8_lossy(&output.stdout)).map_err(|message| Error::Command {
+        command: line,
+        message: format!("printed no rule list: {message}"),
+    })
 }
 
 /// Accumulates defences, keeping the first entry for each identifier.
@@ -194,13 +266,14 @@ struct Collector {
 }
 
 impl Collector {
-    fn push(&mut self, id: &str, engine: Engine, level: &str, origin: &str) {
+    fn push(&mut self, id: &str, engine: Engine, level: &str, origin: &str, description: &str) {
         if self.defences.iter().all(|d| d.id != id) {
             self.defences.push(Defence {
                 id: id.to_owned(),
                 engine,
                 level: level.to_owned(),
                 origin: origin.to_owned(),
+                description: description.to_owned(),
             });
         }
     }
@@ -227,7 +300,7 @@ fn lint_tables(root: &Path, config: &Config, out: &mut Collector) -> Result<(), 
                 other => other.as_str(),
             };
             let origin = format!("{}:{}", setting.manifest.display(), setting.line);
-            out.push(&setting.id, engine, level, &origin);
+            out.push(&setting.id, engine, level, &origin, "");
         }
     }
     Ok(())
@@ -241,10 +314,17 @@ fn runners(root: &Path, config: &Config, out: &mut Collector) {
             Engine::Runner,
             "advisories, bans, licenses, sources",
             "deny.toml",
+            "",
         );
     }
     if tools.audit {
-        out.push("cargo-audit", Engine::Runner, "advisories", "rust-qa audit");
+        out.push(
+            "cargo-audit",
+            Engine::Runner,
+            "advisories",
+            "rust-qa audit",
+            "",
+        );
     }
     if tools.machete {
         out.push(
@@ -252,6 +332,7 @@ fn runners(root: &Path, config: &Config, out: &mut Collector) {
             Engine::Runner,
             "unused dependencies",
             "rust-qa machete",
+            "",
         );
     }
     if tools.test {
@@ -260,6 +341,7 @@ fn runners(root: &Path, config: &Config, out: &mut Collector) {
             Engine::Runner,
             "nextest plus doctests",
             "rust-qa test",
+            "",
         );
     }
     if tools.coverage {
@@ -269,6 +351,7 @@ fn runners(root: &Path, config: &Config, out: &mut Collector) {
             Engine::Runner,
             &level,
             "qa/rust-qa.toml [coverage]",
+            "",
         );
     }
     if tools.mutants && config.mutants.mode != MutantsMode::Off {
@@ -285,6 +368,7 @@ fn runners(root: &Path, config: &Config, out: &mut Collector) {
             Engine::Runner,
             &level,
             "qa/rust-qa.toml [mutants]",
+            "",
         );
     }
 }
@@ -306,6 +390,7 @@ pub fn parse_dylint_list(output: &str) -> Vec<DylintLint> {
                     library: library.clone(),
                     name: name.to_owned(),
                     level: level.to_owned(),
+                    description: columns.collect::<Vec<_>>().join(" "),
                 });
             }
         } else {
@@ -373,6 +458,11 @@ pub fn ast_grep_rules(root: &Path) -> Result<Vec<AstGrepRule>, Error> {
                             .unwrap_or("hint")
                             .to_owned(),
                         file: file.clone(),
+                        message: field(&doc, "message")
+                            .and_then(Yaml::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned(),
                     });
                 }
             }
@@ -381,11 +471,11 @@ pub fn ast_grep_rules(root: &Path) -> Result<Vec<AstGrepRule>, Error> {
     Ok(rules)
 }
 
-fn field<'a>(doc: &'a Yaml, key: &str) -> Option<&'a Yaml> {
+pub(crate) fn field<'a>(doc: &'a Yaml, key: &str) -> Option<&'a Yaml> {
     doc.as_hash()?.get(&Yaml::String(key.to_owned()))
 }
 
-fn load_yaml(path: &Path) -> Result<Vec<Yaml>, Error> {
+pub(crate) fn load_yaml(path: &Path) -> Result<Vec<Yaml>, Error> {
     let text = read_to_string(path)?;
     YamlLoader::load_from_str(&text).map_err(|e| Error::Yaml {
         path: path.to_path_buf(),

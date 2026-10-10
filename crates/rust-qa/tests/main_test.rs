@@ -447,3 +447,229 @@ fn tools_lists_the_catalogue_with_phases() {
     assert!(text.contains("detectors"));
     assert!(text.contains("runners"));
 }
+
+fn findings_exception(rule: &str, path: &str) -> String {
+    format!(
+        "[[exception]]\nrule = \"{rule}\"\npath = \"{path}\"\njustification = \"{GOOD}\"\ncovers = \"findings\"\n"
+    )
+}
+
+#[test]
+fn a_project_rule_without_valid_and_invalid_test_cases_fails_the_ast_grep_detector() {
+    let dir = ast_grep_fixture();
+    write(
+        dir.path(),
+        "qa/rust-qa.toml",
+        "[ast_grep]\nbundled = false\n",
+    );
+    std::fs::remove_file(dir.path().join("src/scratch.rs")).unwrap();
+    let output = rust_qa(dir.path(), &["run", "-t", "ast-grep"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("error[rqaci.rules.untested]"), "{text}");
+    assert!(text.contains("`no-scratch`"), "{text}");
+
+    write(
+        dir.path(),
+        "sgconfig.yml",
+        "ruleDirs:\n  - rules\ntestConfigs:\n  - testDir: rule-tests\n",
+    );
+    write(
+        dir.path(),
+        "rule-tests/no-scratch-test.yml",
+        "id: no-scratch\nvalid:\n  - 'pub fn other() -> u8 { 1 }'\ninvalid:\n  - 'pub fn scratch() -> u8 { 1 }'\n",
+    );
+    let output = rust_qa(dir.path(), &["run", "-t", "ast-grep"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("$ ast-grep test --skip-snapshot-tests"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_findings_exception_covers_an_ast_grep_finding_and_goes_stale_without_one() {
+    let dir = ast_grep_fixture();
+    write(
+        dir.path(),
+        "qa/rust-qa.toml",
+        "[ast_grep]\nbundled = false\n",
+    );
+    write(
+        dir.path(),
+        "sgconfig.yml",
+        "ruleDirs:\n  - rules\ntestConfigs:\n  - testDir: rule-tests\n",
+    );
+    write(
+        dir.path(),
+        "rule-tests/no-scratch-test.yml",
+        "id: no-scratch\nvalid:\n  - 'pub fn other() -> u8 { 1 }'\ninvalid:\n  - 'pub fn scratch() -> u8 { 1 }'\n",
+    );
+    write(
+        dir.path(),
+        "qa/record.toml",
+        &findings_exception("no-scratch", "src/scratch.rs"),
+    );
+    let output = rust_qa(dir.path(), &["run", "-t", "ast-grep"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("1 finding(s) covered by exceptions"),
+        "{text}"
+    );
+
+    std::fs::remove_file(dir.path().join("src/scratch.rs")).unwrap();
+    let output = rust_qa(dir.path(), &["run", "-t", "ast-grep"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("error[rqaci.record.stale]"), "{text}");
+}
+
+#[test]
+fn a_findings_exception_for_a_rule_no_such_detector_reports_is_invalid() {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "qa/record.toml",
+        &findings_exception("clippy::unwrap_used", "src/lib.rs"),
+    );
+    let output = rust_qa(dir.path(), &["run", "-t", "record"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("error[rqaci.record.invalid]"), "{text}");
+    assert!(
+        text.contains("covers findings of `clippy::unwrap_used`"),
+        "{text}"
+    );
+}
+
+const STATUS_STAGE: &str = "[[stage]]\nname = \"marker\"\nphase = \"detectors\"\n\
+    says = \"No file is named FORBIDDEN\"\nfix = \"Rename the file\"\n\
+    command = [\"test\", \"!\", \"-e\", \"FORBIDDEN\"]\n";
+
+#[test]
+fn a_status_stage_fails_the_gate_by_its_exit_code_before_any_runner() {
+    let dir = fixture();
+    write(dir.path(), "qa/rust-qa.toml", STATUS_STAGE);
+    let output = rust_qa(dir.path(), &["run", "-t", "marker"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("==> [detectors] marker"), "{text}");
+    assert!(text.contains("detectors  marker"), "{text}");
+
+    write(dir.path(), "FORBIDDEN", "");
+    let output = rust_qa(dir.path(), &["run", "-t", "marker", "-t", "test"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("runners were not started"), "{text}");
+}
+
+#[test]
+fn a_stage_is_listed_documented_and_shown_in_the_tool_catalogue() {
+    let dir = fixture();
+    write(dir.path(), "qa/rust-qa.toml", STATUS_STAGE);
+    assert!(stdout(&rust_qa(dir.path(), &["rules"])).contains("marker"));
+    assert!(stdout(&rust_qa(dir.path(), &["tools"])).contains("marker       detectors  stage"));
+    let doc = rust_qa(dir.path(), &["rule-doc", "marker"]);
+    assert!(doc.status.success());
+    assert!(stdout(&doc).contains("## How to fix correctly\n\nRename the file"));
+}
+
+fn findings_stage(json: &str) -> String {
+    format!(
+        "[[stage]]\nname = \"scan\"\nphase = \"detectors\"\nsays = \"The project's own scan\"\n\
+         fix = \"Follow the rule's page\"\noutput = \"findings\"\ncommand = [\"echo\", '{json}']\n\
+         rules = [\"echo\", '[{{\"id\": \"SCAN-RULE\", \"description\": \"what the scan finds\"}}]']\n"
+    )
+}
+
+const ONE_FINDING: &str =
+    r#"[{"file": "src/lib.rs", "line": 4, "rule": "SCAN-RULE", "message": "a thing is wrong"}]"#;
+
+#[test]
+fn a_findings_stage_fails_on_what_the_record_leaves_and_passes_what_it_covers() {
+    let dir = fixture();
+    write(dir.path(), "qa/rust-qa.toml", &findings_stage(ONE_FINDING));
+    let output = rust_qa(dir.path(), &["run", "-t", "scan"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("error[SCAN-RULE]: a thing is wrong"),
+        "{text}"
+    );
+    assert!(text.contains("--> src/lib.rs:4"), "{text}");
+
+    write(
+        dir.path(),
+        "qa/record.toml",
+        &findings_exception("SCAN-RULE", "src/lib.rs"),
+    );
+    let output = rust_qa(dir.path(), &["run", "-t", "scan"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}");
+
+    write(dir.path(), "qa/rust-qa.toml", &findings_stage("[]"));
+    let output = rust_qa(dir.path(), &["run", "-t", "scan"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("error[rqaci.record.stale]"), "{text}");
+}
+
+#[test]
+fn a_findings_stage_that_prints_no_findings_list_fails() {
+    let dir = fixture();
+    write(dir.path(), "qa/rust-qa.toml", &findings_stage("not json"));
+    let output = rust_qa(dir.path(), &["run", "-t", "scan"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("printed no findings"), "{text}");
+}
+
+#[test]
+fn the_rules_a_stage_reports_are_listed_and_must_be_documented() {
+    let dir = fixture();
+    write(dir.path(), "qa/rust-qa.toml", &findings_stage("[]"));
+    assert!(stdout(&rust_qa(dir.path(), &["rules"])).contains("SCAN-RULE"));
+    let output = rust_qa(dir.path(), &["docs-check"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).contains("SCAN-RULE"));
+    write(dir.path(), "docs/defences/SCAN-RULE.md", "# SCAN-RULE\n");
+    let output = rust_qa(dir.path(), &["docs-check"]);
+    assert!(output.status.success(), "{}", stdout(&output));
+}
+
+#[test]
+fn a_page_documenting_nothing_listed_fails_the_docs_detector() {
+    let dir = fixture();
+    write(dir.path(), "docs/defences/README.md", "# Pages\n");
+    write(
+        dir.path(),
+        "docs/defences/removed-rule.md",
+        "# removed-rule\n",
+    );
+    let output = rust_qa(dir.path(), &["run", "-t", "docs"]);
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("error[rqaci.docs.orphan]"), "{text}");
+    assert!(text.contains("docs/defences/removed-rule.md"), "{text}");
+    assert!(!text.contains("README"), "{text}");
+}
+
+#[test]
+fn a_misdeclared_stage_or_workspace_is_a_configuration_error() {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "qa/rust-qa.toml",
+        "workspaces = [\"missing\"]\n[[stage]]\nname = \"clippy\"\nphase = \"detectors\"\nsays = \"s\"\nfix = \"f\"\ncommand = [\"true\"]\n",
+    );
+    let output = rust_qa(dir.path(), &["rules"]);
+    assert_eq!(output.status.code(), Some(2));
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(text.contains("name of a built-in tool"), "{text}");
+    assert!(
+        text.contains("workspace `missing` has no Cargo.toml"),
+        "{text}"
+    );
+}

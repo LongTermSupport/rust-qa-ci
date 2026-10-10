@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use rust_qa::builtin::{RECORD_STALE, SUPPRESSION_ALLOW, SUPPRESSION_UNRECORDED};
-use rust_qa::record::{Exception, Record};
+use rust_qa::record::{Covers, Exception, Record};
 use rust_qa::suppression::{Route, Suppression, check, scan, stale};
 
 fn src(text: &str) -> String {
@@ -350,4 +350,24 @@ fn exceptions_matching_nothing_are_stale_only_on_full_scans() {
         check(&result, &record, Path::new("qa/record.toml"), false),
         vec![]
     );
+}
+
+#[test]
+fn a_findings_exception_licenses_no_suppression_and_is_never_stale_here() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/a.rs",
+        "#[expect(dead_code, reason = \"r\")]\nfn a() {}\n",
+    );
+    let result = scan(dir.path(), &[], &no_exclude()).unwrap();
+    let mut covering = exception("dead_code", "src/a.rs");
+    covering.covers = Covers::Findings;
+    let mut elsewhere = exception("my_lint", "src/b.rs");
+    elsewhere.covers = Covers::Findings;
+    let rec = record(vec![covering, elsewhere]);
+    let findings = check(&result, &rec, Path::new("qa/record.toml"), true);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].rule, SUPPRESSION_UNRECORDED);
+    assert_eq!(stale(&result, &rec), Vec::<usize>::new());
 }

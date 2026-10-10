@@ -70,8 +70,7 @@ fn check_owner(cx: &LateContext<'_>, owner: OwnerId) {
             let Some(lints) = generated_suppression(source_map, attr) else {
                 continue;
             };
-            if expanded_from_workspace_macro(tcx, attr.span()) && covers_written_code(tcx, hir_id)
-            {
+            if expanded_from_workspace_macro(tcx, attr.span()) && covers_written_code(tcx, hir_id) {
                 report(cx, hir_id, attr, &lints);
             }
         }

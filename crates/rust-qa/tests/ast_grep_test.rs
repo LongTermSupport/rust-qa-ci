@@ -199,3 +199,50 @@ fn the_pack_is_written_under_target_as_one_multi_document_file() {
     let ids: Vec<&str> = docs.iter().filter_map(|d| d["id"].as_str()).collect();
     assert_eq!(ids, ast_grep::bundled_ids().collect::<Vec<_>>());
 }
+
+#[test]
+fn scan_json_becomes_findings_with_one_based_positions() {
+    let json = r#"[{"text":"x","range":{"byteOffset":{"start":0,"end":1},"start":{"line":2,"column":4},"end":{"line":2,"column":5}},
+        "file":"src/a.rs","lines":"x","language":"Rust","ruleId":"no-x","severity":"error","message":"no x ","note":" use y\n","metadata":null},
+        {"text":"z","range":{"byteOffset":{"start":0,"end":1},"start":{"line":0,"column":0},"end":{"line":0,"column":1}},
+        "file":"src/b.rs","lines":"z","language":"Rust","ruleId":"hint-z","severity":"hint","message":"z","note":null}]"#;
+    let hits = ast_grep::parse_matches(json).unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(
+        (hits[0].rule.as_str(), hits[0].line, hits[0].column),
+        ("no-x", 3, 5)
+    );
+    assert_eq!(hits[0].message, "no x");
+    assert_eq!(hits[0].note.as_deref(), Some("use y"));
+    assert!(hits[0].blocking);
+    assert!(!hits[1].blocking, "only error severity blocks");
+    assert!(ast_grep::parse_matches("Error: no such path").is_err());
+}
+
+#[test]
+fn rules_with_both_kinds_of_test_case_are_tested() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "sgconfig.yml",
+        "ruleDirs: [rules]\ntestConfigs:\n  - testDir: tests-a\n  - testDir: tests-b\n",
+    );
+    write(
+        "tests-a/one.yml",
+        "id: both\nvalid: ['a']\ninvalid: ['b']\n",
+    );
+    write("tests-a/two.yml", "id: only-valid\nvalid: ['a']\n");
+    write(
+        "tests-b/three.yml",
+        "id: empty-invalid\nvalid: ['a']\ninvalid: []\n",
+    );
+    assert!(ast_grep::has_tests(dir.path()).unwrap());
+    assert_eq!(
+        ast_grep::tested_rules(dir.path()).unwrap(),
+        vec!["both".to_owned()]
+    );
+}

@@ -1,13 +1,17 @@
 //! Offline identifier-to-documentation resolution.
 //!
-//! Order: project document (`<docs_dir>/<id>.md`), bundled document, the installed Clippy
-//! (`cargo clippy --explain`), then the installed rustc (lint listing in the `rust-docs` component,
-//! else the one-line description from `rustc -W help`). Nothing is fetched from the network.
+//! Order: project document (`<docs_dir>/<id>.md`, else a page whose name is the identifier as a
+//! lint name, without case and with `-` for `_`), a project stage's own description, bundled
+//! document, the installed Clippy (`cargo clippy --explain`), then the installed rustc (lint listing
+//! in the `rust-docs` component, else the one-line description from `rustc -W help`). Nothing is
+//! fetched from the network.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::Error;
+use crate::record::lint_key;
+use crate::stage::Stage;
 
 /// Bundled rule documents: (identifier, markdown). Every file under `docs/rules/` must be listed
 /// (enforced by a test), and each file's first line is `# <identifier>`.
@@ -41,6 +45,14 @@ static BUNDLED: &[(&str, &str)] = &[
     (
         "rqaci.docs.dangling",
         include_str!("../docs/rules/rqaci.docs.dangling.md"),
+    ),
+    (
+        "rqaci.docs.orphan",
+        include_str!("../docs/rules/rqaci.docs.orphan.md"),
+    ),
+    (
+        "rqaci.rules.untested",
+        include_str!("../docs/rules/rqaci.rules.untested.md"),
     ),
     (
         "rqaci.record.budget",
@@ -110,7 +122,7 @@ pub fn dangling(
     config: &crate::config::Config,
     dylint: &dyn Fn(&Path) -> Result<Vec<crate::defences::DylintLint>, Error>,
 ) -> Result<(Vec<String>, Vec<String>), Error> {
-    let resolver = Resolver::new(root, &config.docs_dir);
+    let resolver = Resolver::for_config(root, config);
     let mut ids: Vec<String> = crate::defences::enumerate(root, config, dylint)?
         .into_iter()
         .map(|d| d.id)
@@ -147,6 +159,46 @@ pub fn doc_file_name(id: &str) -> String {
     format!("{}.md", id.replace("::", "."))
 }
 
+/// Whether the page named `stem` (its file name without `.md`) documents `id`.
+fn documents(stem: &str, id: &str) -> bool {
+    let named = id.replace("::", ".");
+    stem == named || lint_key(stem) == lint_key(&named)
+}
+
+/// Pages in `docs_dir` (relative to `root`) that document none of `ids`, relative to the root and
+/// sorted. `README.md` is never an orphan; a missing directory holds none.
+///
+/// # Errors
+/// Returns an error when the directory exists but cannot be read.
+pub fn orphans(root: &Path, docs_dir: &Path, ids: &[String]) -> Result<Vec<PathBuf>, Error> {
+    let dir = root.join(docs_dir);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(Error::Read { path: dir, source }),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|source| Error::Read {
+                path: dir.clone(),
+                source,
+            })?
+            .path();
+        if path.extension().is_none_or(|e| e != "md") || !path.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if stem != "README" && !ids.iter().any(|id| documents(&stem, id)) {
+            found.push(docs_dir.join(format!("{stem}.md")));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
 /// Where a document came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -160,6 +212,8 @@ pub enum Source {
     RustcBook(PathBuf),
     /// One-line description from `rustc -W help`.
     RustcHelp,
+    /// A project stage's own `says` and `fix`.
+    Stage,
 }
 
 /// A resolved document.
@@ -176,6 +230,7 @@ pub struct Doc {
 pub struct Resolver {
     root: PathBuf,
     docs_dir: PathBuf,
+    stages: Vec<Stage>,
 }
 
 impl Resolver {
@@ -185,7 +240,36 @@ impl Resolver {
         Self {
             root: root.to_path_buf(),
             docs_dir: docs_dir.to_path_buf(),
+            stages: Vec::new(),
         }
+    }
+
+    /// Resolver for the workspace at `root` as `config` describes it, its project stages included.
+    #[must_use]
+    pub fn for_config(root: &Path, config: &crate::config::Config) -> Self {
+        Self {
+            stages: config.stages.clone(),
+            ..Self::new(root, &config.docs_dir)
+        }
+    }
+
+    /// The project page documenting `id` under another spelling of its name, if one exists.
+    fn project_alias(&self, id: &str) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(self.root.join(&self.docs_dir)).ok()?;
+        let mut pages: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "md") && path.is_file())
+            .filter(|path| {
+                path.file_stem()
+                    .is_some_and(|stem| documents(&stem.to_string_lossy(), id))
+            })
+            .collect();
+        pages.sort();
+        pages
+            .into_iter()
+            .next()
+            .and_then(|path| path.file_name().map(|name| self.docs_dir.join(name)))
     }
 
     /// Resolves `id`; `Ok(None)` means the identifier is dangling.
@@ -203,6 +287,18 @@ impl Resolver {
             return Ok(Some(Doc {
                 source: Source::Project(project),
                 text: crate::read_to_string(&absolute)?,
+            }));
+        }
+        if let Some(alias) = self.project_alias(id) {
+            return Ok(Some(Doc {
+                text: crate::read_to_string(&self.root.join(&alias))?,
+                source: Source::Project(alias),
+            }));
+        }
+        if let Some(stage) = self.stages.iter().find(|stage| stage.name == id) {
+            return Ok(Some(Doc {
+                source: Source::Stage,
+                text: stage.doc(),
             }));
         }
         if let Some(text) = bundled(id) {
