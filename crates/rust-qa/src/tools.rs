@@ -1312,7 +1312,14 @@ pub fn render_summary(
     config: &Config,
     dylint_lister: DylintLister,
 ) -> Result<String, Error> {
-    let defences = enumerate(root, config, &dylint_lister)?;
+    let mut defences = enumerate(root, config, &dylint_lister)?;
+    let resolver = crate::docs::Resolver::new(root, &config.docs_dir);
+    for defence in defences.iter_mut().filter(|d| d.summarised) {
+        if let Some(page) = resolver.project_page(&defence.id)? {
+            defence.fix = crate::docs::section_paragraph(&page, &config.summary.fix_headings)
+                .unwrap_or_default();
+        }
+    }
     let record = Record::load(&root.join(&config.record.path))?;
     Ok(summary::render(&defences, &record, &config.record))
 }

@@ -207,3 +207,17 @@ fn pages_documenting_no_listed_identifier_are_orphans() {
         Vec::<std::path::PathBuf>::new()
     );
 }
+
+#[test]
+fn the_fix_section_of_a_page_is_its_first_paragraph_on_one_line() {
+    let page = "# R\n\n## Why\n\nBecause.\n\n## What to do instead\n\nQuote the value\nand move the comment.\n\nMore detail.\n";
+    let headings = [
+        "How to fix correctly".to_owned(),
+        "What to do instead".to_owned(),
+    ];
+    assert_eq!(
+        docs::section_paragraph(page, &headings).as_deref(),
+        Some("Quote the value and move the comment.")
+    );
+    assert_eq!(docs::section_paragraph(page, &headings[..1]), None);
+}

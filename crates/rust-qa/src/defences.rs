@@ -65,6 +65,8 @@ pub struct Defence {
     pub description: String,
     /// Whether the agent summary lists it.
     pub summarised: bool,
+    /// How to fix what it finds, from its project page, for the summary (empty otherwise).
+    pub fix: String,
 }
 
 /// A lint reported by `cargo dylint list`.
@@ -280,6 +282,7 @@ impl Collector {
                 origin: origin.to_owned(),
                 description: description.to_owned(),
                 summarised: true,
+                fix: String::new(),
             });
         }
     }

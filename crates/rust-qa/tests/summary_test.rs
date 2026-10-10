@@ -16,6 +16,7 @@ fn defences() -> Vec<Defence> {
             origin: "Cargo.toml:9".to_owned(),
             description: String::new(),
             summarised: true,
+            fix: String::new(),
         },
         Defence {
             id: "example_type_rule".to_owned(),
@@ -24,6 +25,7 @@ fn defences() -> Vec<Defence> {
             origin: "dylint library x".to_owned(),
             description: "a value of a secret type is printed".to_owned(),
             summarised: true,
+            fix: String::new(),
         },
     ]
 }
@@ -112,4 +114,17 @@ fn a_defence_left_out_of_the_summary_is_not_rendered() {
     let region = render(&defences, &record(), &RecordPolicy::default());
     assert!(!region.contains("example_type_rule` (dylint"), "{region}");
     assert!(region.contains("clippy::unwrap_used` (clippy"), "{region}");
+}
+
+#[test]
+fn a_defence_with_a_fix_from_its_page_says_it() {
+    let mut defences = defences();
+    defences[1].fix = "Implement Debug by hand.".to_owned();
+    let region = render(&defences, &record(), &RecordPolicy::default());
+    assert!(
+        region.contains(
+            "a value of a secret type is printed. Fix: Implement Debug by hand. `rust-qa rule-doc example_type_rule`"
+        ),
+        "{region}"
+    );
 }

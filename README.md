@@ -259,6 +259,8 @@ workspaces = []              # further Cargo workspaces (see "Further workspaces
 
 [summary]
 # file = "AGENTS.md"         # agent-loaded file that receives the generated region; unset = off
+fix_headings = ["How to fix correctly"]  # a project page's section whose first paragraph
+                             # the summary gives beside the rule
 
 [tools]                      # explicit `-t` requests override these switches
 fmt = true

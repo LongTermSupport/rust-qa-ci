@@ -23,11 +23,14 @@ pub fn render(defences: &[Defence], record: &Record, policy: &RecordPolicy) -> S
     );
     out.push_str("`rust-qa rule-doc <id>`. Exceptions only via the project record, with a justification.\n\n");
     for defence in defences.iter().filter(|d| d.summarised) {
-        let said = if defence.description.is_empty() {
+        let mut said = if defence.description.is_empty() {
             String::new()
         } else {
             format!(" {}.", defence.description.trim_end_matches('.'))
         };
+        if !defence.fix.is_empty() {
+            let _ = write!(said, " Fix: {}", defence.fix);
+        }
         let _ = writeln!(
             out,
             "- `{}` ({}, {}):{said} `rust-qa rule-doc {}`",

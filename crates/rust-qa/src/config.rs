@@ -92,11 +92,23 @@ pub struct Dylint {
 }
 
 /// Where the generated agent summary region is written.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Summary {
     /// Agent-loaded file holding the generated region; `None` disables the summary check.
     pub file: Option<PathBuf>,
+    /// Headings of the section in a project page that says how to fix what the rule finds; the
+    /// summary gives that section's first paragraph beside the rule.
+    pub fix_headings: Vec<String>,
+}
+
+impl Default for Summary {
+    fn default() -> Self {
+        Self {
+            file: None,
+            fix_headings: vec!["How to fix correctly".to_owned()],
+        }
+    }
 }
 
 /// Per-tool switches. A tool whose own configuration file is absent reports itself as skipped.

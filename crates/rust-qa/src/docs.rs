@@ -160,6 +160,28 @@ pub fn doc_file_name(id: &str) -> String {
     format!("{}.md", id.replace("::", "."))
 }
 
+/// The first paragraph of the `## <heading>` section of a markdown page, for the first of
+/// `headings` the page has, on one line.
+#[must_use]
+pub fn section_paragraph(text: &str, headings: &[String]) -> Option<String> {
+    for heading in headings {
+        let marker = format!("## {heading}");
+        let mut lines = text.lines().skip_while(|line| line.trim_end() != marker);
+        if lines.next().is_none() {
+            continue;
+        }
+        let paragraph: Vec<&str> = lines
+            .skip_while(|line| line.trim().is_empty())
+            .take_while(|line| !line.trim().is_empty() && !line.starts_with('#'))
+            .map(str::trim)
+            .collect();
+        if !paragraph.is_empty() {
+            return Some(paragraph.join(" "));
+        }
+    }
+    None
+}
+
 /// Whether the page named `stem` (its file name without `.md`) documents `id`.
 fn documents(stem: &str, id: &str) -> bool {
     let named = id.replace("::", ".");
@@ -260,6 +282,23 @@ impl Resolver {
             resolvers: config.resolvers.clone(),
             ..Self::new(root, &config.docs_dir)
         }
+    }
+
+    /// The project page for `id`, under its own name or another spelling of it, if one exists.
+    ///
+    /// # Errors
+    /// Returns an error when the page exists but cannot be read.
+    pub fn project_page(&self, id: &str) -> Result<Option<String>, Error> {
+        let id = id.trim();
+        let id = id.strip_prefix(AST_GREP_PREFIX).unwrap_or(id);
+        let exact = self.docs_dir.join(doc_file_name(id));
+        let page = if self.root.join(&exact).is_file() {
+            Some(exact)
+        } else {
+            self.project_alias(id)
+        };
+        page.map(|page| crate::read_to_string(&self.root.join(page)))
+            .transpose()
     }
 
     /// The project page documenting `id` under another spelling of its name, if one exists.
