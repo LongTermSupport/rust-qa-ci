@@ -78,7 +78,9 @@ while read -r section name version; do
     fi
     case "${section}" in
         bootstrap) ensure_binstall "${version}" ;;
-        prebuilt) cargo binstall --no-confirm --locked "${name}@${version}" ;;
+        # Only the binaries a crate's own releases publish; without one, a source build. Never
+        # QuickInstall, which serves third-party builds.
+        prebuilt) cargo binstall --no-confirm --locked --disable-strategies quick-install "${name}@${version}" ;;
         source) cargo install --locked --force "${name}@${version}" ;;
         *) echo "unknown section ${section}" >&2; exit 2 ;;
     esac
