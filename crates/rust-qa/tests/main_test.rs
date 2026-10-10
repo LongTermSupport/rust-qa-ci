@@ -673,3 +673,61 @@ fn a_misdeclared_stage_or_workspace_is_a_configuration_error() {
         "{text}"
     );
 }
+
+const LINTER_STAGE: &str = r#"
+[[stage]]
+name = "linter"
+phase = "detectors"
+says = "An off-the-shelf linter"
+fix = "Follow the linter's page for the rule"
+command = ["true"]
+summary_rules = false
+rules = ["echo", '[{"id": "plugin/no-thing", "description": "no thing", "doc": "plugin/no-thing: no thing. Online at https://example.com/no-thing"}]']
+
+[[resolver]]
+matches = "LX[0-9]*"
+text = "{id}: a linter code; its page is https://example.com/{id}"
+"#;
+
+#[test]
+fn a_stage_rule_resolves_to_the_documentation_its_tool_gives() {
+    let dir = fixture();
+    write(dir.path(), "qa/rust-qa.toml", LINTER_STAGE);
+    let output = rust_qa(dir.path(), &["rule-doc", "plugin/no-thing"]);
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("Online at https://example.com/no-thing"));
+    let output = rust_qa(dir.path(), &["docs-check"]);
+    assert!(output.status.success(), "{}", stdout(&output));
+}
+
+#[test]
+fn a_configured_resolver_documents_codes_nothing_lists() {
+    let dir = fixture();
+    write(dir.path(), "qa/rust-qa.toml", LINTER_STAGE);
+    let output = rust_qa(dir.path(), &["rule-doc", "LX2086"]);
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output).trim(),
+        "LX2086: a linter code; its page is https://example.com/LX2086"
+    );
+    assert_eq!(
+        rust_qa(dir.path(), &["rule-doc", "QX1"]).status.code(),
+        Some(1)
+    );
+}
+
+#[test]
+fn a_stage_may_keep_its_rules_out_of_the_agent_summary() {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "qa/rust-qa.toml",
+        &format!("[summary]\nfile = \"AGENTS.md\"\n{LINTER_STAGE}"),
+    );
+    let output = rust_qa(dir.path(), &["summary"]);
+    assert!(output.status.success(), "{}", stdout(&output));
+    let summary = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+    assert!(summary.contains("`linter` (stage"), "{summary}");
+    assert!(!summary.contains("plugin/no-thing"), "{summary}");
+    assert!(stdout(&rust_qa(dir.path(), &["rules"])).contains("plugin/no-thing"));
+}

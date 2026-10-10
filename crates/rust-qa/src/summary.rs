@@ -22,7 +22,7 @@ pub fn render(defences: &[Defence], record: &Record, policy: &RecordPolicy) -> S
         "\n\nActive defences. Failures print these ids unaltered; resolve any id offline with ",
     );
     out.push_str("`rust-qa rule-doc <id>`. Exceptions only via the project record, with a justification.\n\n");
-    for defence in defences {
+    for defence in defences.iter().filter(|d| d.summarised) {
         let said = if defence.description.is_empty() {
             String::new()
         } else {

@@ -125,6 +125,7 @@ exclude = ["vendor/**"]
 # dir = "web"                             # working directory, with its own Rust toolchain
 # output = "findings"                     # see below; the default is "status"
 # rules = ["node", "scan.ts", "--rules"]  # prints the rules the stage reports
+# summary_rules = false                   # keep those rules out of the agent summary
 ```
 
 Files are chosen from the tree as Git would see it (`.gitignore` honoured, untracked files
@@ -140,8 +141,20 @@ list on stdout and exits 0 or 1:
 
 (`file` relative to `dir`, or to the root; `column` and `note` optional). `rust-qa` applies the
 record's `covers = "findings"` exceptions, prints what remains and fails the gate on it. A `rules`
-command prints `[{"id": "MY-RULE", "description": "what it finds"}]`: those rules are listed, need
-documentation like any other identifier, and an exception for one that covers nothing is stale.
+command prints `[{"id": "MY-RULE", "description": "what it finds", "doc": "..."}]`: those rules
+are listed, need documentation like any other identifier (a project page, else the optional `doc`
+text, for a tool that ships its own pages or names where they are), and an exception for one that
+covers nothing is stale. A stage running a large off-the-shelf rule set can keep its rules out of
+the agent summary with `summary_rules = false`; `rust-qa rules` still lists them.
+
+A tool may print codes that no listing names, such as a linter's numbered checks. Document them
+with a resolver, tried after every other source:
+
+```toml
+[[resolver]]
+matches = "SC[0-9]*"                      # glob over the identifier
+text = "{id}: see https://www.shellcheck.net/wiki/{id}"
+```
 
 ## Project record
 

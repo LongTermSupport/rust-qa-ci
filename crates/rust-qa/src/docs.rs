@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::Error;
+use crate::config::DocResolver;
 use crate::record::lint_key;
 use crate::stage::Stage;
 
@@ -212,8 +213,10 @@ pub enum Source {
     RustcBook(PathBuf),
     /// One-line description from `rustc -W help`.
     RustcHelp,
-    /// A project stage's own `says` and `fix`.
+    /// A project stage's own `says` and `fix`, or the documentation its `rules` command gives.
     Stage,
+    /// A `[[resolver]]` text from the configuration.
+    Configured,
 }
 
 /// A resolved document.
@@ -231,6 +234,9 @@ pub struct Resolver {
     root: PathBuf,
     docs_dir: PathBuf,
     stages: Vec<Stage>,
+    resolvers: Vec<DocResolver>,
+    /// The rules every stage's `rules` command printed, read once.
+    stage_rules: std::cell::OnceCell<Vec<crate::stage::StageRule>>,
 }
 
 impl Resolver {
@@ -241,6 +247,8 @@ impl Resolver {
             root: root.to_path_buf(),
             docs_dir: docs_dir.to_path_buf(),
             stages: Vec::new(),
+            resolvers: Vec::new(),
+            stage_rules: std::cell::OnceCell::new(),
         }
     }
 
@@ -249,6 +257,7 @@ impl Resolver {
     pub fn for_config(root: &Path, config: &crate::config::Config) -> Self {
         Self {
             stages: config.stages.clone(),
+            resolvers: config.resolvers.clone(),
             ..Self::new(root, &config.docs_dir)
         }
     }
@@ -301,6 +310,12 @@ impl Resolver {
                 text: stage.doc(),
             }));
         }
+        if let Some(text) = self.stage_rule_doc(id)? {
+            return Ok(Some(Doc {
+                source: Source::Stage,
+                text,
+            }));
+        }
         if let Some(text) = bundled(id) {
             return Ok(Some(Doc {
                 source: Source::Bundled,
@@ -310,10 +325,42 @@ impl Resolver {
         if let Some(name) = id.strip_prefix("clippy::") {
             return Ok(self.clippy_explain(name));
         }
-        if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Ok(self.rustc_lint(id));
+        if !id.is_empty()
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && let Some(doc) = self.rustc_lint(id)
+        {
+            return Ok(Some(doc));
         }
-        Ok(None)
+        Ok(self.configured(id))
+    }
+
+    /// The documentation a stage's `rules` command gives for one of its rules.
+    fn stage_rule_doc(&self, id: &str) -> Result<Option<String>, Error> {
+        if self.stage_rules.get().is_none() {
+            let mut all = Vec::new();
+            for stage in self.stages.iter().filter(|stage| stage.rules.is_some()) {
+                all.extend(crate::defences::stage_rules(&self.root, stage)?);
+            }
+            let _ = self.stage_rules.set(all);
+        }
+        Ok(self
+            .stage_rules
+            .get()
+            .and_then(|rules| rules.iter().find(|rule| rule.id == id))
+            .and_then(|rule| rule.doc.clone()))
+    }
+
+    /// The text of the first configured resolver whose glob matches `id`.
+    fn configured(&self, id: &str) -> Option<Doc> {
+        self.resolvers.iter().find_map(|resolver| {
+            let glob = globset::Glob::new(&resolver.matches)
+                .ok()?
+                .compile_matcher();
+            glob.is_match(id).then(|| Doc {
+                source: Source::Configured,
+                text: resolver.text.replace("{id}", id),
+            })
+        })
     }
 
     fn command(&self, program: &str) -> Command {

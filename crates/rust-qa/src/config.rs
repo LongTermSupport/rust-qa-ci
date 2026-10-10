@@ -45,6 +45,21 @@ pub struct Config {
     /// Project stages: further commands the gate runs, each in a phase.
     #[serde(rename = "stage")]
     pub stages: Vec<Stage>,
+    /// Documentation for identifiers a tool prints but nothing lists, such as the codes of a
+    /// linter a stage runs, matched by glob.
+    #[serde(rename = "resolver")]
+    pub resolvers: Vec<DocResolver>,
+}
+
+/// Documentation for the identifiers matching a glob: a text with `{id}` for the identifier, such
+/// as where the tool's own pages are.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocResolver {
+    /// Glob over the identifier, such as `SC[0-9]*`.
+    pub matches: String,
+    /// The documentation printed, with `{id}` replaced.
+    pub text: String,
 }
 
 impl Default for Config {
@@ -61,6 +76,7 @@ impl Default for Config {
             workspaces: Vec::new(),
             dylint: Dylint::default(),
             stages: Vec::new(),
+            resolvers: Vec::new(),
         }
     }
 }
@@ -246,6 +262,14 @@ impl Config {
                     "stage `{}` has the name of a built-in tool",
                     stage.name
                 ));
+            }
+        }
+        for resolver in &config.resolvers {
+            if let Err(error) = globset::Glob::new(&resolver.matches) {
+                problems.push(format!("resolver `{}`: {error}", resolver.matches));
+            }
+            if resolver.text.trim().is_empty() {
+                problems.push(format!("resolver `{}` has no text", resolver.matches));
             }
         }
         for workspace in &config.workspaces {

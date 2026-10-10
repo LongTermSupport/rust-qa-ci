@@ -15,6 +15,7 @@ fn defences() -> Vec<Defence> {
             level: "deny".to_owned(),
             origin: "Cargo.toml:9".to_owned(),
             description: String::new(),
+            summarised: true,
         },
         Defence {
             id: "example_type_rule".to_owned(),
@@ -22,6 +23,7 @@ fn defences() -> Vec<Defence> {
             level: "deny".to_owned(),
             origin: "dylint library x".to_owned(),
             description: "a value of a secret type is printed".to_owned(),
+            summarised: true,
         },
     ]
 }
@@ -101,4 +103,13 @@ fn a_findings_exception_says_what_it_covers() {
         region.contains("(review by 2027-01-31, added by human, covers findings)\n"),
         "{region}"
     );
+}
+
+#[test]
+fn a_defence_left_out_of_the_summary_is_not_rendered() {
+    let mut defences = defences();
+    defences[1].summarised = false;
+    let region = render(&defences, &record(), &RecordPolicy::default());
+    assert!(!region.contains("example_type_rule` (dylint"), "{region}");
+    assert!(region.contains("clippy::unwrap_used` (clippy"), "{region}");
 }

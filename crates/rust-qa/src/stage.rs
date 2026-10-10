@@ -16,6 +16,7 @@
 //! dir = "web"                              # working directory, with its own Rust toolchain
 //! output = "findings"                      # status (the exit code) | findings (JSON on stdout)
 //! rules = ["node", "scan.ts", "--rules"]   # prints the rules the stage reports, as JSON
+//! summary_rules = false                    # keep those rules out of the agent summary
 //! ```
 
 use std::fmt::Write as _;
@@ -68,6 +69,14 @@ pub struct Stage {
     /// `{"id": ..., "description": ...}`, for the listing, the documentation check and the summary.
     #[serde(default)]
     pub rules: Option<Vec<String>>,
+    /// Whether the agent summary lists the rules the stage reports (the stage itself is always
+    /// listed); a stage that runs a large off-the-shelf rule set may leave them to `rust-qa rules`.
+    #[serde(default = "yes")]
+    pub summary_rules: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// How a stage reports.
@@ -91,6 +100,10 @@ pub struct StageRule {
     /// What it finds.
     #[serde(default)]
     pub description: String,
+    /// Its documentation, for a rule whose tool ships it (or a pointer to it) rather than a page
+    /// the project writes; a project page of the same name takes precedence.
+    #[serde(default)]
+    pub doc: Option<String>,
 }
 
 impl Stage {

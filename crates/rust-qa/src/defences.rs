@@ -63,6 +63,8 @@ pub struct Defence {
     pub origin: String,
     /// What it guards, where the configuration says (empty otherwise).
     pub description: String,
+    /// Whether the agent summary lists it.
+    pub summarised: bool,
 }
 
 /// A lint reported by `cargo dylint list`.
@@ -211,6 +213,9 @@ fn stage_defences(root: &Path, config: &Config, out: &mut Collector) -> Result<(
             let origin = format!("stage {}", stage.name);
             for rule in stage_rules(root, stage)? {
                 out.push(&rule.id, Engine::Stage, "error", &origin, &rule.description);
+                if let Some(listed) = out.defences.iter_mut().find(|d| d.id == rule.id) {
+                    listed.summarised &= stage.summary_rules;
+                }
             }
         }
     }
@@ -274,6 +279,7 @@ impl Collector {
                 level: level.to_owned(),
                 origin: origin.to_owned(),
                 description: description.to_owned(),
+                summarised: true,
             });
         }
     }
