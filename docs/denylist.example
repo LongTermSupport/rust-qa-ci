@@ -12,9 +12,6 @@
 example[ _-]?product
 example-org/private-repo
 
-# Domain vocabulary that would reveal what the consuming project does
-widget reconciliation
-
 # Internal hostnames, paths and identifiers
 internal\.example\.com
 /srv/example-workspace/
