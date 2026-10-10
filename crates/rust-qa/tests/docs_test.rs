@@ -221,3 +221,12 @@ fn the_fix_section_of_a_page_is_its_first_paragraph_on_one_line() {
     );
     assert_eq!(docs::section_paragraph(page, &headings[..1]), None);
 }
+
+#[test]
+fn a_fix_paragraph_that_introduces_an_example_ends_as_a_sentence() {
+    let page = "## How to fix correctly\n\nWrap the error:\n\n```rust\nx\n```\n";
+    assert_eq!(
+        docs::section_paragraph(page, &["How to fix correctly".to_owned()]).as_deref(),
+        Some("Wrap the error.")
+    );
+}

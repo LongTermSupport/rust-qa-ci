@@ -163,7 +163,7 @@ pub fn enumerate(
                     Engine::AstGrep,
                     "error",
                     &rule.file.display().to_string(),
-                    &rule.message,
+                    &terse_message(&rule.id, &rule.message),
                 );
             }
         }
@@ -222,6 +222,22 @@ fn stage_defences(root: &Path, config: &Config, out: &mut Collector) -> Result<(
         }
     }
     Ok(())
+}
+
+/// A rule's message without its own identifier in front, which the listing shows already, or a
+/// trailing `(page.md)` reference.
+#[must_use]
+pub fn terse_message(id: &str, message: &str) -> String {
+    let message = message.trim();
+    let message = message
+        .strip_prefix(id)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .map_or(message, str::trim_start);
+    let message = match message.rfind(" (") {
+        Some(at) if message.ends_with(".md)") => message.get(..at).unwrap_or(message),
+        _ => message,
+    };
+    message.trim().to_owned()
 }
 
 /// The rules a project stage reports, from its `rules` command (none without one).

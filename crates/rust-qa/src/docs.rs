@@ -176,7 +176,12 @@ pub fn section_paragraph(text: &str, headings: &[String]) -> Option<String> {
             .map(str::trim)
             .collect();
         if !paragraph.is_empty() {
-            return Some(paragraph.join(" "));
+            let text = paragraph.join(" ");
+            // A paragraph that introduces an example ends where the example would begin.
+            return Some(match text.strip_suffix(':') {
+                Some(lead) => format!("{lead}."),
+                None => text,
+            });
         }
     }
     None

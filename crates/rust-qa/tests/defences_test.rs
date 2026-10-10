@@ -250,3 +250,15 @@ fn project_ast_grep_rules_bring_the_test_case_defence() {
     let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
     assert!(defences.iter().all(|d| d.id != "rqaci.rules.untested"));
 }
+
+#[test]
+fn a_rule_message_is_listed_without_its_own_identifier_or_page() {
+    assert_eq!(
+        rust_qa::defences::terse_message("R-1", "R-1: a thing is wrong (docs/rules/R-1.md)"),
+        "a thing is wrong"
+    );
+    assert_eq!(
+        rust_qa::defences::terse_message("R-1", "a thing (in brackets) is wrong"),
+        "a thing (in brackets) is wrong"
+    );
+}
