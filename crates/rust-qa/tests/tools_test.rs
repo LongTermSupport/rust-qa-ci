@@ -239,3 +239,23 @@ fn dylint_loads_every_configured_library() {
         "cargo dylint --all --workspace -- --all-targets --all-features"
     );
 }
+
+#[test]
+fn tools_do_not_inherit_the_package_environment_of_cargo_run() {
+    // cargo sets the same variables for this test binary as `cargo run` sets for rust-qa.
+    assert!(std::env::var_os("CARGO_PKG_NAME").is_some());
+    let ctx = context(Config::default());
+    let command = plan(Tool::Machete, &ctx)[0].command();
+    let removed: Vec<String> = command
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    for name in ["CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_MANIFEST_DIR"] {
+        assert!(removed.iter().any(|r| r == name), "{name} is passed on");
+    }
+    assert!(
+        !removed.iter().any(|r| r == "CARGO" || r == "PATH"),
+        "only the package description is removed: {removed:?}"
+    );
+}
