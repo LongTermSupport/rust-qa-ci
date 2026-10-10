@@ -597,7 +597,8 @@ fn automation_identities_are_recognised() {
     ] {
         assert!(looks_automated(id), "{id} should look automated");
     }
-    for id in ["alice", "joseph", "maintainer", "Lucia"] {
+    // "maintainer" and "Decider" hold "ai" and "ci" inside a longer word, which is not a match.
+    for id in ["alice", "joseph", "maintainer", "Decider"] {
         assert!(!looks_automated(id), "{id} should look human");
     }
 }

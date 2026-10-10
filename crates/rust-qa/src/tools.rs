@@ -326,6 +326,36 @@ impl Cmd {
     fn display(&self) -> String {
         format!("{} {}", self.program, self.args.join(" "))
     }
+
+    /// The process to spawn, without the variables `cargo run` sets to describe the package it
+    /// runs: they describe rust-qa's caller, not the workspace under check, and tools act on
+    /// them (cargo-machete takes `CARGO_PKG_NAME` to mean it was not started as `cargo machete`).
+    #[must_use]
+    pub fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        for (name, _) in std::env::vars_os() {
+            if is_package_variable(&name.to_string_lossy()) {
+                command.env_remove(name);
+            }
+        }
+        command
+    }
+}
+
+/// Whether `name` is one of the variables Cargo sets for a package's binaries and tests.
+fn is_package_variable(name: &str) -> bool {
+    name.starts_with("CARGO_PKG_")
+        || name.starts_with("CARGO_BIN_EXE_")
+        || matches!(
+            name,
+            "CARGO_MANIFEST_DIR"
+                | "CARGO_MANIFEST_PATH"
+                | "CARGO_CRATE_NAME"
+                | "CARGO_BIN_NAME"
+                | "CARGO_PRIMARY_PACKAGE"
+                | "CARGO_TARGET_TMPDIR"
+        )
 }
 
 /// Mutation diff location for `diff` mode, relative to the root.
@@ -617,8 +647,8 @@ impl RealExecutor {
 
     fn status(&self, cmd: &Cmd) -> Result<bool, Error> {
         println!("$ {}", cmd.display());
-        let status = Command::new(&cmd.program)
-            .args(&cmd.args)
+        let status = cmd
+            .command()
             .current_dir(&self.ctx.root)
             .status()
             .map_err(|e| missing_tool(cmd, &e))?;
@@ -653,8 +683,8 @@ impl RealExecutor {
         let mut build_failed = false;
         for cmd in plan(tool, ctx) {
             println!("$ {}", cmd.display());
-            let output = Command::new(&cmd.program)
-                .args(&cmd.args)
+            let output = cmd
+                .command()
                 .current_dir(&ctx.root)
                 .stderr(Stdio::inherit())
                 .output()

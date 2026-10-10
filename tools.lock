@@ -1,5 +1,6 @@
 # Pinned versions of every external QA tool, installed by scripts/install-tools.sh.
-# Format: one `name = "version"` per line under [prebuilt] (cargo-binstall) or [source]
+# Format: one `name = "version"` per line under [prebuilt] (cargo-binstall, from the crate's own
+# releases, or a source build where it publishes none) or [source]
 # (cargo install --locked; used where prebuilt binaries need a newer glibc than common CI images).
 # The Rust toolchains themselves are pinned by rust-toolchain.toml files, not here.
 

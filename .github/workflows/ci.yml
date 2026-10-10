@@ -33,6 +33,32 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  # The release gate: this repository's own entry point, with every pinned tool and the bundled
+  # dylint library, on this repository's source (docs/CONFORMANCE.md, 8.2).
+  self-gate:
+    name: Self-gate (rust-qa run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The record ratchet compares with the merge base on origin/main.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the lint library's nightly toolchain
+        run: rustup toolchain install
+        working-directory: lints/rqaci_lints
+      - name: Install the pinned tools (versions from tools.lock)
+        env:
+          # cargo-binstall looks releases up through the GitHub API.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/install-tools.sh
+      - name: The lint library's UI tests (outside the workspace, on its own toolchain)
+        run: cargo test --locked
+        working-directory: lints/rqaci_lints
+      - run: cargo install --locked --path crates/rust-qa
+      - run: rust-qa run --ci
+
   workflows:
     name: Workflow and script lint
     runs-on: ubuntu-24.04
