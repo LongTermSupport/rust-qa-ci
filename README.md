@@ -15,22 +15,22 @@ submit for inclusion is licensed under the same terms.
 all static findings; any format or detector failure stops the run before the first runner. Within a
 phase the built-in tools run first, then the project's own stages (see "Project stages").
 
-| Phase | Tool (`-t` name) | What |
-|---|---|---|
-| format | `fmt` | `cargo fmt` (fixes locally; `--no-fix` checks) |
-| detectors | `record` | project record validation and anti-bloat policy (`rqaci.record.invalid`, `.budget`, `.ratchet`, `.expired`) |
-| | `suppression` | unrecorded suppressions and `allow` attributes (`rqaci.suppression.unrecorded`, `rqaci.suppression.allow`, `rqaci.record.stale`) |
-| | `summary` | agent summary freshness (`rqaci.summary.stale`) |
-| | `docs` | every listed identifier resolves to documentation (`rqaci.docs.dangling`), and every page in `docs_dir` documents a listed identifier (`rqaci.docs.orphan`) |
-| | `ast-grep` | supplementary syntactic rules: the project's `sgconfig.yml` rules, then the bundled `rqaci.ast.*` pack, with the record applied; every project rule has test cases (`rqaci.rules.untested`), run by `ast-grep test` when `sgconfig.yml` declares `testConfigs` |
-| | `clippy` | Clippy with `-D warnings` and the Cargo `[lints]` tables |
-| | `dylint` | type-aware rule libraries from `[workspace.metadata.dylint]`; every finding of one of their lints blocks, at any level, unless the record covers it |
-| runners | `deny` | cargo-deny (advisories, bans, licences, sources) |
-| | `audit` | cargo-audit (off by default) |
-| | `machete` | unused dependencies |
-| | `test` | cargo-nextest, then doctests |
-| | `coverage` | cargo-llvm-cov with a line threshold |
-| | `mutants` | cargo-mutants (`off`, `diff` against a base, or `full`) |
+| Phase     | Tool (`-t` name) | What                                                                                                                                                                                                                                                           |
+| --------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| format    | `fmt`            | `cargo fmt` (fixes locally; `--no-fix` checks)                                                                                                                                                                                                                 |
+| detectors | `record`         | project record validation and anti-bloat policy (`rqaci.record.invalid`, `.budget`, `.ratchet`, `.expired`)                                                                                                                                                    |
+|           | `suppression`    | unrecorded suppressions and `allow` attributes (`rqaci.suppression.unrecorded`, `rqaci.suppression.allow`, `rqaci.record.stale`)                                                                                                                               |
+|           | `summary`        | agent summary freshness (`rqaci.summary.stale`)                                                                                                                                                                                                                |
+|           | `docs`           | every listed identifier resolves to documentation (`rqaci.docs.dangling`), and every page in `docs_dir` documents a listed identifier (`rqaci.docs.orphan`)                                                                                                    |
+|           | `ast-grep`       | supplementary syntactic rules: the project's `sgconfig.yml` rules, then the bundled `rqaci.ast.*` pack, with the record applied; every project rule has test cases (`rqaci.rules.untested`), run by `ast-grep test` when `sgconfig.yml` declares `testConfigs` |
+|           | `clippy`         | Clippy with `-D warnings` and the Cargo `[lints]` tables                                                                                                                                                                                                       |
+|           | `dylint`         | type-aware rule libraries from `[workspace.metadata.dylint]`; every finding of one of their lints blocks, at any level, unless the record covers it                                                                                                            |
+| runners   | `deny`           | cargo-deny (advisories, bans, licences, sources)                                                                                                                                                                                                               |
+|           | `audit`          | cargo-audit (off by default)                                                                                                                                                                                                                                   |
+|           | `machete`        | unused dependencies                                                                                                                                                                                                                                            |
+|           | `test`           | cargo-nextest, then doctests                                                                                                                                                                                                                                   |
+|           | `coverage`       | cargo-llvm-cov with a line threshold                                                                                                                                                                                                                           |
+|           | `mutants`        | cargo-mutants (`off`, `diff` against a base, or `full`)                                                                                                                                                                                                        |
 
 Options: `-t <tool or stage>` (repeatable), `-p <path>` (repeatable; one file is enough; per-crate
 engines analyse the owning crate and print only diagnostics inside the path), `--ci` (also implied
@@ -48,7 +48,8 @@ workspace and a pinned nightly of its own. List each under `workspaces` in `qa/r
 `[workspace.metadata.dylint]`, loaded by path or git) and `test` (`cargo test --workspace`, which
 runs a lint library's UI tests) then check it in its own directory, with the toolchain its
 `rust-toolchain.toml` names: the variables rustup and cargo set for the toolchain `rust-qa` runs
-under are not passed on. A subset run checks only the workspaces that hold a scoped path. Coverage,
+under are not passed on, so that toolchain's `components` must list `rustfmt` and `clippy`
+(a runner installs the minimal profile). A subset run checks only the workspaces that hold a scoped path. Coverage,
 mutation testing and the dependency runners stay with the root workspace.
 
 Other commands, none of which run a defence:
@@ -83,10 +84,10 @@ Write each rule against the richest layer that can express it.
 and honours `scan_exclude`). Each rule is a cheap single-file check that no Clippy or rustc lint
 covers, and its doc says why syntax suffices:
 
-| Rule | Flags |
-|---|---|
-| `rqaci.ast.shell-c-command` | `Command::new("sh")` (or another shell) given `-c` and a command string |
-| `rqaci.ast.hardcoded-temp-path` | string literals under `/tmp` or `/var/tmp` |
+| Rule                                  | Flags                                                                         |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| `rqaci.ast.shell-c-command`           | `Command::new("sh")` (or another shell) given `-c` and a command string       |
+| `rqaci.ast.hardcoded-temp-path`       | string literals under `/tmp` or `/var/tmp`                                    |
 | `rqaci.ast.tls-verification-disabled` | `danger_accept_invalid_certs(true)` / `danger_accept_invalid_hostnames(true)` |
 
 Switch the pack off with `[ast_grep] bundled = false`; project rules keep running. Silence one
@@ -207,15 +208,15 @@ route ends in the record.
 Exception records (baselines, allowlists) grow by default: each entry is cheap to add and nobody
 owns its removal. The `record` detector makes growth expensive and shrinkage automatic:
 
-| Control | Rule | Fails when |
-|---|---|---|
-| Budget | `rqaci.record.budget` | more than `max_total` entries, `max_per_rule` for one rule id, `max_policy` broad entries, or a tier's `max_count` |
-| Breadth | `rqaci.record.invalid` | a glob path without `policy = true` (or the marker on a single file) |
+| Control    | Rule                   | Fails when                                                                                                                                            |
+| ---------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Budget     | `rqaci.record.budget`  | more than `max_total` entries, `max_per_rule` for one rule id, `max_policy` broad entries, or a tier's `max_count`                                    |
+| Breadth    | `rqaci.record.invalid` | a glob path without `policy = true` (or the marker on a single file)                                                                                  |
 | Provenance | `rqaci.record.invalid` | `decided_by`, `added_by_model`, `decided_on` or `review_by` missing; a model that maps to no trust tier; `human` claimed by someone not in `deciders` |
-| Horizon | `rqaci.record.invalid` | `review_by` further from `decided_on` than the tier allows |
-| Co-sign | `rqaci.record.invalid` | a rule in a `[[record.trust.cosign]]` category written below its `min_tier` without a configured decider as `decided_by` |
-| Expiry | `rqaci.record.expired` | `review_by` is in the past |
-| Ratchet | `rqaci.record.ratchet` | no `[ratchet]`; more entries than `high_water`; an unsigned or generic ceiling; a raise without a fresh signature; an unlowered ceiling in CI |
+| Horizon    | `rqaci.record.invalid` | `review_by` further from `decided_on` than the tier allows                                                                                            |
+| Co-sign    | `rqaci.record.invalid` | a rule in a `[[record.trust.cosign]]` category written below its `min_tier` without a configured decider as `decided_by`                              |
+| Expiry     | `rqaci.record.expired` | `review_by` is in the past                                                                                                                            |
+| Ratchet    | `rqaci.record.ratchet` | no `[ratchet]`; more entries than `high_water`; an unsigned or generic ceiling; a raise without a fresh signature; an unlowered ceiling in CI         |
 
 The ratchet: when entries are removed, a local `rust-qa run` (or `record prune`) rewrites
 `high_water` to the new count, and CI fails until that is committed. Adding an entry needs
