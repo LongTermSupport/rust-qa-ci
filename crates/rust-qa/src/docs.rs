@@ -2,9 +2,10 @@
 //!
 //! Order: project document (`<docs_dir>/<id>.md`, else a page whose name is the identifier as a
 //! lint name, without case and with `-` for `_`), a project stage's own description, bundled
-//! document, the installed Clippy (`cargo clippy --explain`), then the installed rustc (lint listing
-//! in the `rust-docs` component, else the one-line description from `rustc -W help`). Nothing is
-//! fetched from the network.
+//! document (a `cargo-deny::<code>` resolves to the cargo-deny page, naming the code), the installed
+//! Clippy (`cargo clippy --explain`), then the installed rustc (`rustc --explain` for an error code;
+//! for a lint, the listing in the `rust-docs` component, else the one-line description from
+//! `rustc -W help`). Nothing is fetched from the network.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,6 +20,18 @@ use crate::stage::Stage;
 static BUNDLED: &[(&str, &str)] = &[
     ("cargo-audit", include_str!("../docs/rules/cargo-audit.md")),
     ("cargo-deny", include_str!("../docs/rules/cargo-deny.md")),
+    (
+        "rqaci.rules.unnamed",
+        include_str!("../docs/rules/rqaci.rules.unnamed.md"),
+    ),
+    (
+        "rqaci.dylint.nameless",
+        include_str!("../docs/rules/rqaci.dylint.nameless.md"),
+    ),
+    (
+        "unused-suppression",
+        include_str!("../docs/rules/unused-suppression.md"),
+    ),
     (
         "cargo-machete",
         include_str!("../docs/rules/cargo-machete.md"),
@@ -112,6 +125,9 @@ static BUNDLED: &[(&str, &str)] = &[
 
 /// Prefix of ast-grep rule ids in the project record (see the suppression guard).
 const AST_GREP_PREFIX: &str = "ast-grep::";
+
+/// Prefix of cargo-deny's own codes as the deny runner prints them.
+pub const CARGO_DENY_PREFIX: &str = "cargo-deny::";
 
 /// Identifiers that must resolve (every listed defence plus the built-ins), sorted, and those that
 /// do not.
@@ -244,6 +260,8 @@ pub enum Source {
     RustcBook(PathBuf),
     /// One-line description from `rustc -W help`.
     RustcHelp,
+    /// `rustc --explain` for a compiler error code.
+    RustcExplain,
     /// A project stage's own `says` and `fix`, or the documentation its `rules` command gives.
     Stage,
     /// A `[[resolver]]` text from the configuration.
@@ -370,8 +388,21 @@ impl Resolver {
                 text: text.to_owned(),
             }));
         }
+        if let Some(code) = id.strip_prefix(CARGO_DENY_PREFIX)
+            && let Some(page) = bundled("cargo-deny")
+        {
+            return Ok(Some(Doc {
+                source: Source::Bundled,
+                text: format!(
+                    "`{code}` is a cargo-deny code; the check that printed it is described below.\n\n{page}"
+                ),
+            }));
+        }
         if let Some(name) = id.strip_prefix("clippy::") {
             return Ok(self.clippy_explain(name));
+        }
+        if is_error_code(id) {
+            return Ok(self.rustc_explain(id));
         }
         if !id.is_empty()
             && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -430,6 +461,19 @@ impl Resolver {
         })
     }
 
+    fn rustc_explain(&self, code: &str) -> Option<Doc> {
+        let output = self
+            .command("rustc")
+            .args(["--explain", code])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (output.status.success() && !text.is_empty()).then_some(Doc {
+            source: Source::RustcExplain,
+            text: format!("# {code}\n\n{text}"),
+        })
+    }
+
     fn rustc_lint(&self, name: &str) -> Option<Doc> {
         self.rustc_book(name).or_else(|| self.rustc_help(name))
     }
@@ -478,6 +522,12 @@ impl Resolver {
             })
         })
     }
+}
+
+/// Whether `id` is a compiler error code, such as `E0308`.
+fn is_error_code(id: &str) -> bool {
+    id.strip_prefix('E')
+        .is_some_and(|digits| digits.len() == 4 && digits.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Text of the HTML section that starts at the heading carrying `anchor`, with tags stripped.

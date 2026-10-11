@@ -502,13 +502,6 @@ fn main_plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
     } else {
         vec!["--workspace".to_owned()]
     };
-    let json = |cmd: Cmd| {
-        if scoped {
-            cmd.arg("--message-format=json")
-        } else {
-            cmd
-        }
-    };
     match tool {
         Tool::Fmt => {
             let cmd = Cmd::new("cargo", &["fmt"]);
@@ -525,7 +518,13 @@ fn main_plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
                 .arg("--all-targets")
                 .arg("--all-features")
                 .locked(locked);
-            vec![json(cmd).arg("--").arg("-D").arg("warnings")]
+            // JSON on every run, so that each finding prints its lint name unaltered.
+            vec![
+                cmd.arg("--message-format=json")
+                    .arg("--")
+                    .arg("-D")
+                    .arg("warnings"),
+            ]
         }
         Tool::Dylint => vec![
             Cmd::new("cargo", &["dylint", "--all"])
@@ -539,7 +538,14 @@ fn main_plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
         Tool::AstGrep => ast_grep_plan(ctx),
         Tool::Deny => vec![Cmd::new(
             "cargo",
-            &["deny", "--workspace", "--all-features", "check"],
+            &[
+                "deny",
+                "--format",
+                "json",
+                "--workspace",
+                "--all-features",
+                "check",
+            ],
         )],
         Tool::Audit => vec![Cmd::new("cargo", &["audit"])],
         Tool::Machete => vec![Cmd::new("cargo", &["machete"])],
@@ -584,7 +590,6 @@ fn main_plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
 /// Commands for a further workspace, run in its directory with its own toolchain. Coverage,
 /// mutation testing and the dependency runners stay with the main workspace.
 fn workspace_plan(tool: Tool, ctx: &Context, dir: &Path) -> Vec<Cmd> {
-    let scoped = !ctx.scope.is_empty();
     let locked = has_lock(&ctx.root.join(dir));
     match tool {
         Tool::Fmt => {
@@ -597,12 +602,13 @@ fn workspace_plan(tool: Tool, ctx: &Context, dir: &Path) -> Vec<Cmd> {
                 &["clippy", "--workspace", "--all-targets", "--all-features"],
             )
             .locked(locked);
-            let cmd = if scoped {
+            vec![
                 cmd.arg("--message-format=json")
-            } else {
-                cmd
-            };
-            vec![cmd.arg("--").arg("-D").arg("warnings").within(dir)]
+                    .arg("--")
+                    .arg("-D")
+                    .arg("warnings")
+                    .within(dir),
+            ]
         }
         Tool::Dylint => dylint_libraries(&ctx.root)
             .unwrap_or_default()
@@ -759,7 +765,8 @@ impl RealExecutor {
                 Ok(Outcome::Skipped("mutants mode is off".to_owned()))
             }
             Tool::Mutants if ctx.config.mutants.mode == MutantsMode::Diff => self.mutants_diff(),
-            Tool::Clippy if scoped => self.scoped_diagnostics(tool),
+            Tool::Clippy => self.compiler_diagnostics(tool),
+            Tool::Deny => self.deny(),
             Tool::Fmt => {
                 let outcome = self.commands(tool)?;
                 if outcome == Outcome::Passed && ctx.ci && ctx.fix {
@@ -993,6 +1000,16 @@ impl RealExecutor {
         }
         let mut hosted: Vec<String> = ast_grep::bundled_ids().map(ToOwned::to_owned).collect();
         if ctx.root.join("sgconfig.yml").is_file() {
+            let unnamed: Vec<Finding> = crate::defences::unnamed_ast_grep_rules(&ctx.root)?
+                .into_iter()
+                .map(|file| Finding {
+                    rule: builtin::RULES_UNNAMED,
+                    path: file,
+                    line: 0,
+                    message: "a rule here has no `id`, so ast-grep reports it under the file's name, which nothing lists, documents or tests".to_owned(),
+                })
+                .collect();
+            passed &= Self::report(&unnamed) == Outcome::Passed;
             let rules = crate::defences::ast_grep_rules(&ctx.root)?;
             let tested = ast_grep::tested_rules(&ctx.root)?;
             let untested: Vec<Finding> = rules
@@ -1048,20 +1065,21 @@ impl RealExecutor {
                 if !ctx.scope.is_empty() && !in_scope(&diagnostic, &ctx.root, &ctx.scope) {
                     continue;
                 }
-                let lint = diagnostic
-                    .code
-                    .as_deref()
-                    .filter(|code| lints.iter().any(|l| lint_key(l) == lint_key(code)));
-                match lint {
-                    Some(code) => hits.push(lint_hit(&diagnostic, code)),
-                    None if diagnostic.is_error() => {
-                        print!("{}", diagnostic.rendered);
-                        if let Some(code) = &diagnostic.code {
-                            println!("  = doc: rust-qa rule-doc {code}");
-                        }
+                match dylint_disposition(&diagnostic, &lints) {
+                    Disposition::Lint(code) => hits.push(lint_hit(&diagnostic, &code)),
+                    Disposition::Error => {
+                        print!("{}", diagnostic_text(&diagnostic));
                         errors += 1;
                     }
-                    None => {}
+                    Disposition::Nameless => {
+                        print!("{}", diagnostic_text(&diagnostic));
+                        println!(
+                            "  = gate: blocking; a lint library reported this through no declared lint\n  = doc: rust-qa rule-doc {}",
+                            builtin::DYLINT_NAMELESS
+                        );
+                        errors += 1;
+                    }
+                    Disposition::Other => {}
                 }
             }
         }
@@ -1079,8 +1097,11 @@ impl RealExecutor {
         })
     }
 
-    fn scoped_diagnostics(&self, tool: Tool) -> Result<Outcome, Error> {
+    /// Prints each compiler finding with its identifier, narrowed to the scoped paths on a subset
+    /// run, and fails on every error and on a build that failed.
+    fn compiler_diagnostics(&self, tool: Tool) -> Result<Outcome, Error> {
         let ctx = &self.ctx;
+        let scoped = !ctx.scope.is_empty();
         let mut blocking = 0usize;
         let mut build_failed = false;
         for cmd in plan(tool, ctx) {
@@ -1091,13 +1112,10 @@ impl RealExecutor {
                 &output.stdout,
             ))) {
                 let diagnostic = diagnostic.under(&ctx.root, &prefix);
-                if !in_scope(&diagnostic, &ctx.root, &ctx.scope) {
+                if scoped && !in_scope(&diagnostic, &ctx.root, &ctx.scope) {
                     continue;
                 }
-                print!("{}", diagnostic.rendered);
-                if let Some(code) = &diagnostic.code {
-                    println!("  = doc: rust-qa rule-doc {code}");
-                }
+                print!("{}", diagnostic_text(&diagnostic));
                 if diagnostic.is_error() {
                     blocking += 1;
                 }
@@ -1108,11 +1126,38 @@ impl RealExecutor {
         }
         if build_failed {
             println!(
-                "error: the build failed outside the scoped paths; scoped results are incomplete"
+                "{}",
+                if scoped {
+                    "error: the build failed outside the scoped paths; scoped results are incomplete"
+                } else {
+                    "error: the build failed; cargo's own message is above"
+                }
             );
             return Ok(Outcome::Failed);
         }
         Ok(Outcome::Passed)
+    }
+
+    /// Runs cargo-deny and prints each of its findings under an identifier that resolves.
+    fn deny(&self) -> Result<Outcome, Error> {
+        let mut passed = true;
+        for cmd in plan(Tool::Deny, &self.ctx) {
+            println!("$ {}", cmd.display());
+            let output = self
+                .spawn(&cmd)
+                .stdout(Stdio::inherit())
+                .output()
+                .map_err(|e| missing_tool(&cmd, &e))?;
+            for line in deny_report(&String::from_utf8_lossy(&output.stderr)) {
+                println!("{line}");
+            }
+            passed &= output.status.success();
+        }
+        Ok(if passed {
+            Outcome::Passed
+        } else {
+            Outcome::Failed
+        })
     }
 
     /// Runs a project stage: by its exit code, or by the findings it prints, with the record
@@ -1238,6 +1283,134 @@ impl RealExecutor {
 
 fn scoped_in(path: &Path, scope: &[PathBuf]) -> bool {
     scope.is_empty() || scope.iter().any(|wanted| path.starts_with(wanted))
+}
+
+/// A compiler finding as the gate prints it: the compiler's rendering, then the identifier to
+/// resolve, unaltered, when the finding has one.
+#[must_use]
+pub fn diagnostic_text(diagnostic: &Diagnostic) -> String {
+    let mut text = diagnostic.rendered.trim_end().to_owned();
+    text.push('\n');
+    if let Some(code) = &diagnostic.code {
+        text.push_str("  = doc: rust-qa rule-doc ");
+        text.push_str(code);
+        text.push('\n');
+    }
+    text
+}
+
+/// What the dylint lane does with one diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Disposition {
+    /// A finding of a configured library's lint, under that name.
+    Lint(String),
+    /// A compiler error: printed, and it fails the gate.
+    Error,
+    /// A finding at a source location that carries no lint name: a library reported it outside
+    /// any declared lint, so nothing could document, record or level it. It fails the gate.
+    Nameless,
+    /// Another tool's lint, or cargo's count of what it printed; the lanes that own them report them.
+    Other,
+}
+
+/// How the dylint lane treats `diagnostic`, given the configured libraries' `lints`.
+#[must_use]
+pub fn dylint_disposition(diagnostic: &Diagnostic, lints: &[String]) -> Disposition {
+    match diagnostic.code.as_deref() {
+        Some(code) if lints.iter().any(|l| lint_key(l) == lint_key(code)) => {
+            Disposition::Lint(code.to_owned())
+        }
+        _ if diagnostic.is_error() => Disposition::Error,
+        None if !diagnostic.files.is_empty() => Disposition::Nameless,
+        _ => Disposition::Other,
+    }
+}
+
+/// cargo-deny's `--format json` stream as the gate prints it: each finding under its code, as
+/// `cargo-deny::<code>` so that `rust-qa rule-doc` resolves it, with the crates it names. A line
+/// that is not a cargo-deny record is printed as it came.
+#[must_use]
+pub fn deny_report(stream: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    for raw in stream.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(record) = serde_json::from_str::<Value>(raw) else {
+            lines.push(raw.to_owned());
+            continue;
+        };
+        let fields = record.get("fields").cloned().unwrap_or(Value::Null);
+        let text = |key: &str| fields.get(key).and_then(Value::as_str).unwrap_or("");
+        match record.get("type").and_then(Value::as_str) {
+            Some("diagnostic") => {
+                let code = text("code");
+                lines.push(format!(
+                    "{}[{}{code}]: {}",
+                    text("severity"),
+                    crate::docs::CARGO_DENY_PREFIX,
+                    text("message")
+                ));
+                for label in fields
+                    .get("labels")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let at = |key: &str| label.get(key).and_then(Value::as_u64).unwrap_or(0);
+                    let said = label.get("message").and_then(Value::as_str).unwrap_or("");
+                    lines.push(format!(
+                        "  = at line {}, column {}: {}{}",
+                        at("line"),
+                        at("column"),
+                        label.get("span").and_then(Value::as_str).unwrap_or(""),
+                        if said.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({said})")
+                        }
+                    ));
+                }
+                for graph in fields
+                    .get("graphs")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(krate) = graph.get("Krate") {
+                        let part = |key: &str| krate.get(key).and_then(Value::as_str).unwrap_or("");
+                        lines.push(format!("  = crate: {} {}", part("name"), part("version")));
+                    }
+                }
+                for note in fields
+                    .get("notes")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    lines.push(format!("  = note: {}", note.as_str().unwrap_or_default()));
+                }
+                if !code.is_empty() {
+                    lines.push(format!(
+                        "  = doc: rust-qa rule-doc {}{code}",
+                        crate::docs::CARGO_DENY_PREFIX
+                    ));
+                }
+            }
+            Some("summary") => {
+                for (check, counts) in fields.as_object().into_iter().flatten() {
+                    let count = |key: &str| counts.get(key).and_then(Value::as_u64).unwrap_or(0);
+                    lines.push(format!(
+                        "    {check}: {} error(s), {} warning(s)",
+                        count("errors"),
+                        count("warnings")
+                    ));
+                }
+            }
+            _ => {
+                let message = fields.get("message").and_then(Value::as_str);
+                lines.push(message.map_or_else(|| raw.to_owned(), ToOwned::to_owned));
+            }
+        }
+    }
+    lines
 }
 
 fn lint_hit(diagnostic: &Diagnostic, code: &str) -> Hit {
