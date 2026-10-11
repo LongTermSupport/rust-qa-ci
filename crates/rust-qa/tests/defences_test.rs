@@ -284,3 +284,46 @@ fn project_ast_grep_rules_without_an_id_are_named_by_file() {
         vec![std::path::PathBuf::from("rules/noid.yml")]
     );
 }
+
+#[test]
+fn every_lint_from_a_lints_table_carries_its_own_one_line_description() {
+    let dir = workspace();
+    let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
+    let find = |id: &str| defences.iter().find(|d| d.id == id).unwrap();
+    let unwrap_used = &find("clippy::unwrap_used").description;
+    assert!(unwrap_used.contains("unwrap"), "{unwrap_used}");
+    assert_ne!(find("unsafe_code").description, "");
+    assert_ne!(find("clippy::pedantic").description, "");
+    assert_ne!(find("clippy::expect_used").description, "");
+}
+
+#[test]
+fn the_warnings_defence_says_how_to_list_every_lint_it_makes_blocking() {
+    let dir = workspace();
+    let defences = enumerate(dir.path(), &Config::default(), FAKE_DYLINT).unwrap();
+    let warnings = &defences
+        .iter()
+        .find(|d| d.id == "warnings")
+        .unwrap()
+        .description;
+    assert!(warnings.contains("rustc -W help"), "{warnings}");
+    assert!(warnings.contains("clippy-driver -W help"), "{warnings}");
+}
+
+#[test]
+fn a_lint_help_listing_gives_lints_and_groups_their_descriptions() {
+    let listing = "\nAvailable lint options:\n\nLint checks provided by rustc:\n\n    name  default  meaning\n    ----  -------  -------\n    unsafe-code  allow  usage of `unsafe` code and other potentially unsound constructs\n    clippy::len-zero  warn  checking `.len() == 0`\n\nLint groups provided by rustc:\n\n    name  sub-lints\n    ----  ---------\n    unused  unused-imports, unused-variables\n";
+    let help = rust_qa::defences::parse_lint_help(listing);
+    assert_eq!(
+        help.get("unsafe_code").map(String::as_str),
+        Some("usage of `unsafe` code and other potentially unsound constructs")
+    );
+    assert_eq!(
+        help.get("clippy::len_zero").map(String::as_str),
+        Some("checking `.len() == 0`")
+    );
+    assert_eq!(
+        help.get("unused").map(String::as_str),
+        Some("the lint group of unused-imports, unused-variables")
+    );
+}

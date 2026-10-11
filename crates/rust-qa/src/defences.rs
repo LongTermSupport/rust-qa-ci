@@ -2,6 +2,7 @@
 //! dylint libraries, ast-grep rule directories and the bundled ast-grep pack, `qa/rust-qa.toml` and
 //! its project stages, with the rules those stages report), never from a hand-kept list.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -146,7 +147,7 @@ pub fn enumerate(
             Engine::Rustc,
             "deny (-D warnings)",
             "rust-qa clippy",
-            "every compiler and Clippy warning fails the gate",
+            "every compiler and Clippy warning fails the gate, so every lint at `warn` blocks; `rustc -W help` and `clippy-driver -W help` list each lint with its level",
         );
         lint_tables(root, config, &mut out)?;
     }
@@ -311,9 +312,17 @@ fn lint_tables(root: &Path, config: &Config, out: &mut Collector) -> Result<(), 
     let manifests = workspace_files(root, &[], &exclude, |p| {
         p.file_name().is_some_and(|n| n == "Cargo.toml")
     });
+    let mut settings = Vec::new();
     for manifest in manifests {
         let text = read_to_string(&root.join(&manifest))?;
-        for setting in lint_settings(&text, &manifest)? {
+        settings.extend(lint_settings(&text, &manifest)?);
+    }
+    let help = lint_help(
+        root,
+        &settings.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+    );
+    {
+        for setting in settings {
             let engine = if setting.id.starts_with("clippy::") {
                 Engine::Clippy
             } else if setting.id.starts_with("rustdoc::") {
@@ -327,10 +336,85 @@ fn lint_tables(root: &Path, config: &Config, out: &mut Collector) -> Result<(), 
                 other => other.as_str(),
             };
             let origin = format!("{}:{}", setting.manifest.display(), setting.line);
-            out.push(&setting.id, engine, level, &origin, "");
+            let description = crate::docs::bundled(&setting.id)
+                .and_then(|page| {
+                    crate::docs::section_paragraph(page, &["What it flags".to_owned()])
+                })
+                .or_else(|| help.get(&setting.id).cloned())
+                .unwrap_or_default();
+            out.push(&setting.id, engine, level, &origin, &description);
         }
     }
     Ok(())
+}
+
+/// One-line descriptions of the lints and groups `ids` name, from the installed toolchain's own
+/// `-W help` listings: rustc's always, Clippy's and rustdoc's when an id needs them. A listing
+/// that cannot be run contributes nothing.
+fn lint_help(root: &Path, ids: &[&str]) -> BTreeMap<String, String> {
+    let mut programs = vec!["rustc"];
+    if ids.iter().any(|id| id.starts_with("clippy::")) {
+        programs.push("clippy-driver");
+    }
+    if ids.iter().any(|id| id.starts_with("rustdoc::")) {
+        programs.push("rustdoc");
+    }
+    let mut help = BTreeMap::new();
+    for program in programs {
+        if let Ok(output) = Command::new(program)
+            .args(["-W", "help"])
+            .current_dir(root)
+            .output()
+        {
+            for (id, text) in parse_lint_help(&String::from_utf8_lossy(&output.stdout)) {
+                help.entry(id).or_insert(text);
+            }
+        }
+    }
+    help
+}
+
+/// One-line descriptions from a `-W help` listing (`rustc`, `clippy-driver` or `rustdoc`), keyed by
+/// identifier as a `[lints]` table spells it (`_` for `-`); a group is described by its members.
+#[must_use]
+pub fn parse_lint_help(listing: &str) -> BTreeMap<String, String> {
+    const SHOWN: usize = 5;
+    let mut found = BTreeMap::new();
+    for line in listing
+        .lines()
+        .filter(|l| l.starts_with(char::is_whitespace))
+    {
+        let mut words = line.split_whitespace();
+        let (Some(name), Some(second)) = (words.next(), words.next()) else {
+            continue;
+        };
+        if name == "name" || name.starts_with("--") {
+            continue;
+        }
+        let text = if matches!(second, "allow" | "warn" | "deny" | "forbid") {
+            words.collect::<Vec<_>>().join(" ")
+        } else {
+            let members: Vec<String> = std::iter::once(second)
+                .chain(words)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split(", ")
+                .map(ToOwned::to_owned)
+                .collect();
+            let shown = members
+                .iter()
+                .take(SHOWN)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            match members.len().checked_sub(SHOWN) {
+                Some(more) if more > 0 => format!("the lint group of {shown} and {more} more"),
+                _ => format!("the lint group of {shown}"),
+            }
+        };
+        found.entry(name.replace('-', "_")).or_insert(text);
+    }
+    found
 }
 
 fn runners(root: &Path, config: &Config, out: &mut Collector) {
@@ -434,14 +518,25 @@ pub fn parse_dylint_list(output: &str) -> Vec<DylintLint> {
 /// Returns an error when cargo-dylint is missing or fails.
 pub fn dylint_lints(root: &Path) -> Result<Vec<DylintLint>, Error> {
     let command = "cargo dylint list --all";
-    let output = Command::new("cargo")
-        .args(["dylint", "list", "--all"])
-        .current_dir(root)
-        .output()
-        .map_err(|e| Error::Command {
+    let list = |offline: bool| {
+        let mut cmd = Command::new("cargo");
+        cmd.args(["dylint", "list", "--all"]).current_dir(root);
+        if offline {
+            cmd.env("CARGO_NET_OFFLINE", "true");
+        }
+        cmd.output().map_err(|e| Error::Command {
             command: command.to_owned(),
             message: e.to_string(),
-        })?;
+        })
+    };
+    // Offline first, so that a library already fetched lists with no network; a library not yet
+    // fetched needs the network once.
+    let offline = list(true)?;
+    let output = if offline.status.success() {
+        offline
+    } else {
+        list(false)?
+    };
     if !output.status.success() {
         return Err(Error::Command {
             command: command.to_owned(),

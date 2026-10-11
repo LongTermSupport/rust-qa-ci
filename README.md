@@ -54,7 +54,10 @@ mutation testing and the dependency runners stay with the root workspace.
 
 Other commands, none of which run a defence:
 
-- `rust-qa rules [--json]`: every active defence, derived from configuration, plus the project record
+- `rust-qa rules [--json]`: every active defence, derived from configuration, plus the project record; each
+  with a one-line description (for a `[lints]` entry, from the toolchain's own `-W help`). The
+  dylint libraries are listed offline when they have been fetched before; a git library not yet
+  fetched needs the network once
 - `rust-qa rule-doc <id>`: documentation for any printed identifier, offline
 - `rust-qa docs-check`: fail if a listed identifier has no documentation
 - `rust-qa record check|list`: validate (structure and policy) or list project-record exceptions,
