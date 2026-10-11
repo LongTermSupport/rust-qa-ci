@@ -177,9 +177,13 @@ pub fn section_paragraph(text: &str, headings: &[String]) -> Option<String> {
             .collect();
         if !paragraph.is_empty() {
             let text = paragraph.join(" ");
-            // A paragraph that introduces an example ends where the example would begin.
+            // A paragraph that introduces an example ends where the example would begin; a last
+            // sentence that only introduces it says nothing without it, so it is dropped.
             return Some(match text.strip_suffix(':') {
-                Some(lead) => format!("{lead}."),
+                Some(lead) => match lead.rfind(". ") {
+                    Some(end) => lead[..=end].to_owned(),
+                    None => format!("{lead}."),
+                },
                 None => text,
             });
         }

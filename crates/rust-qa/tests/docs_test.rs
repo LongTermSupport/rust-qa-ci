@@ -230,3 +230,12 @@ fn a_fix_paragraph_that_introduces_an_example_ends_as_a_sentence() {
         Some("Wrap the error.")
     );
 }
+
+#[test]
+fn a_fix_paragraph_whose_last_sentence_only_introduces_a_list_drops_that_sentence() {
+    let page = "## How to fix correctly\n\nFix the script. The usual constructions:\n\n- Quote.\n";
+    assert_eq!(
+        docs::section_paragraph(page, &["How to fix correctly".to_owned()]).as_deref(),
+        Some("Fix the script.")
+    );
+}
