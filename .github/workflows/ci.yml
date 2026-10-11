@@ -53,9 +53,6 @@ jobs:
           # cargo-binstall looks releases up through the GitHub API.
           GITHUB_TOKEN: ${{ github.token }}
         run: scripts/install-tools.sh
-      - name: The lint library's UI tests (outside the workspace, on its own toolchain)
-        run: cargo test --locked
-        working-directory: lints/rqaci_lints
       - run: cargo install --locked --path crates/rust-qa
       - run: rust-qa run --ci
 

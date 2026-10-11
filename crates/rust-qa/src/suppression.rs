@@ -20,7 +20,7 @@ use toml::Value;
 use crate::builtin::{RECORD_STALE, SUPPRESSION_ALLOW, SUPPRESSION_UNRECORDED};
 use crate::finding::Finding;
 use crate::manifest::{Level, lint_settings, workspace_files};
-use crate::record::{Record, normalise_rule};
+use crate::record::{Covers, Record, normalise_rule};
 use crate::{Error, read_to_string};
 
 /// How a suppression is expressed.
@@ -196,7 +196,8 @@ pub fn check(
     findings
 }
 
-/// Indexes of record exceptions that cover no suppression in a full scan.
+/// Indexes of record exceptions licensing suppressions that cover no suppression in a full scan.
+/// Exceptions with `covers = "findings"` are judged by the detector whose findings they cover.
 #[must_use]
 pub fn stale(result: &ScanResult, record: &Record) -> Vec<usize> {
     let mut used = vec![false; record.exceptions.len()];
@@ -215,6 +216,12 @@ pub fn stale(result: &ScanResult, record: &Record) -> Vec<usize> {
     }
     (0..used.len())
         .filter(|index| used.get(*index) == Some(&false))
+        .filter(|index| {
+            record
+                .exceptions
+                .get(*index)
+                .is_some_and(|e| e.covers == Covers::Suppressions)
+        })
         .collect()
 }
 

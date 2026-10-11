@@ -11,8 +11,9 @@ use rust_qa::docs::Resolver;
 use rust_qa::finding::Finding;
 use rust_qa::pipeline::{Outcome, execute};
 use rust_qa::policy::{RecordPolicy, Status, gate, remove_exceptions, set_high_water};
+use rust_qa::record::Covers;
 use rust_qa::record::{Record, normalise_rule};
-use rust_qa::tools::{Context, RealExecutor, Tool, render_summary, select};
+use rust_qa::tools::{Context, RealExecutor, Tool, render_summary, select, step_name};
 use rust_qa::{DBF_POINTER, Error, builtin, summary, suppression};
 
 /// One QA entry point for a Rust workspace: format, detectors, then runners.
@@ -49,7 +50,7 @@ enum Cmd {
         #[arg(long)]
         fail_fast: bool,
     },
-    /// List the tool catalogue with phases and whether each is enabled.
+    /// List the tool catalogue and the project stages, with phases and whether each is enabled.
     Tools,
     /// List every active defence and the project record, without running anything.
     Rules {
@@ -135,6 +136,9 @@ fn dispatch(cli: Cli) -> Result<bool, Error> {
                     "disabled"
                 };
                 println!("{:<12} {:<10} {state}", tool.name(), tool.phase().name());
+            }
+            for stage in &config.stages {
+                println!("{:<12} {:<10} stage", stage.name, stage.phase.name());
             }
             Ok(true)
         }
@@ -249,6 +253,13 @@ fn explain(root: &Path, config: &Config, record: &Record, target: &str) -> Resul
             ),
             _ => println!("  decided_on or review_by missing"),
         }
+        if exception.covers == Covers::Findings {
+            println!(
+                "  covers: the findings of `{}` at `{}`, applied by the detector that reports them (`rust-qa run` shows how many)",
+                exception.rule, exception.path
+            );
+            continue;
+        }
         let sites: Vec<String> = scan
             .suppressions
             .iter()
@@ -266,7 +277,7 @@ fn explain(root: &Path, config: &Config, record: &Record, target: &str) -> Resul
 }
 
 fn rule_doc(root: &Path, config: &Config, id: &str) -> Result<bool, Error> {
-    let resolver = Resolver::new(root, &config.docs_dir);
+    let resolver = Resolver::for_config(root, config);
     let Some(doc) = resolver.resolve(id)? else {
         println!("no documentation for `{id}` (dangling identifier)");
         return Ok(false);
@@ -344,13 +355,17 @@ fn run(
     };
     let report = execute(&selected, &mut executor, fail_fast);
     println!("\nrust-qa summary:");
-    for (tool, outcome) in &report.results {
+    for (step, outcome) in &report.results {
         let text = match outcome {
             Outcome::Passed => "passed".to_owned(),
             Outcome::Failed => "FAILED".to_owned(),
             Outcome::Skipped(reason) => format!("skipped ({reason})"),
         };
-        println!("  {:<10} {:<12} {text}", tool.phase().name(), tool.name());
+        println!(
+            "  {:<10} {:<12} {text}",
+            step.phase().name(),
+            step_name(*step, &executor.ctx.config)
+        );
     }
     if report.stopped_before_runners {
         println!("detectors failed: runners were not started");
@@ -387,7 +402,7 @@ fn rules(root: &Path, config: &Config, json: bool) -> Result<bool, Error> {
         let value = serde_json::json!({
             "defences": defences.iter().map(|d| serde_json::json!({
                 "id": d.id, "engine": d.engine.name(), "level": d.level, "origin": d.origin,
-                "doc": format!("rust-qa rule-doc {}", d.id),
+                "description": d.description, "doc": format!("rust-qa rule-doc {}", d.id),
             })).collect::<Vec<_>>(),
             "record": record.exceptions.iter().map(|e| serde_json::json!({
                 "rule": e.rule, "path": e.path, "justification": e.justification,
@@ -395,6 +410,7 @@ fn rules(root: &Path, config: &Config, json: bool) -> Result<bool, Error> {
                 "tier": e.added_by_model.as_deref().map(|m| policy.tier(m).name()),
                 "decided_on": e.decided_on.map(|d| d.to_string()),
                 "review_by": e.review_by.map(|d| d.to_string()), "policy": e.policy,
+                "covers": e.covers.name(),
             })).collect::<Vec<_>>(),
             "budget": {
                 "total": status.total, "max_total": status.max_total,
@@ -429,8 +445,12 @@ fn print_record(record: &Record, policy: &RecordPolicy) {
         let review_by = exception
             .review_by
             .map_or_else(|| "-".to_owned(), |date| date.to_string());
+        let covers = match exception.covers {
+            Covers::Suppressions => "",
+            Covers::Findings => "[findings] ",
+        };
         println!(
-            "  {:<40} {:<36} review by {review_by:<10} {}",
+            "  {:<40} {:<36} review by {review_by:<10} {covers}{}",
             exception.rule, exception.path, exception.justification
         );
     }

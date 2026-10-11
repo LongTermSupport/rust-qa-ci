@@ -4,6 +4,10 @@
 # dylint UI fixtures contain deliberate violations; they are proven by the lint library's own tests.
 scan_exclude = ["lints/*/ui/*", "lints/*/ui_*/*"]
 
+# The bundled lint library is a workspace of its own, on its own nightly: fmt, clippy, dylint and
+# its UI tests (the `test` tool) run there too.
+workspaces = ["lints/rqaci_lints"]
+
 [record]
 # Five entries today; the ratchet in qa/record.toml holds the count, this caps it.
 max_total = 6

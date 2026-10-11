@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::Error;
 use crate::policy::RecordPolicy;
+use crate::stage::Stage;
 
 /// Location of the project configuration file, relative to the workspace root.
 pub const DEFAULT_PATH: &str = "qa/rust-qa.toml";
@@ -34,6 +35,31 @@ pub struct Config {
     pub coverage: Coverage,
     /// Mutation testing policy.
     pub mutants: Mutants,
+    /// Further Cargo workspaces in the repository (directories relative to the root), such as a
+    /// dylint library, which keeps a workspace and a pinned toolchain of its own. `fmt`, `clippy`,
+    /// `dylint` and `test` check each one, in its directory and with the toolchain its own
+    /// `rust-toolchain.toml` names.
+    pub workspaces: Vec<PathBuf>,
+    /// dylint detector settings.
+    pub dylint: Dylint,
+    /// Project stages: further commands the gate runs, each in a phase.
+    #[serde(rename = "stage")]
+    pub stages: Vec<Stage>,
+    /// Documentation for identifiers a tool prints but nothing lists, such as the codes of a
+    /// linter a stage runs, matched by glob.
+    #[serde(rename = "resolver")]
+    pub resolvers: Vec<DocResolver>,
+}
+
+/// Documentation for the identifiers matching a glob: a text with `{id}` for the identifier, such
+/// as where the tool's own pages are.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocResolver {
+    /// Glob over the identifier, such as `SC[0-9]*`.
+    pub matches: String,
+    /// The documentation printed, with `{id}` replaced.
+    pub text: String,
 }
 
 impl Default for Config {
@@ -47,16 +73,42 @@ impl Default for Config {
             ast_grep: AstGrep::default(),
             coverage: Coverage::default(),
             mutants: Mutants::default(),
+            workspaces: Vec::new(),
+            dylint: Dylint::default(),
+            stages: Vec::new(),
+            resolvers: Vec::new(),
         }
     }
 }
 
-/// Where the generated agent summary region is written.
+/// dylint detector settings.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Dylint {
+    /// Force every lint of the configured libraries to warn (`--force-warn`), so that no level
+    /// written in the code can lower or silence one; `rust-qa` then fails the gate on each finding
+    /// the record does not cover.
+    pub force_warn: bool,
+}
+
+/// Where the generated agent summary region is written.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Summary {
     /// Agent-loaded file holding the generated region; `None` disables the summary check.
     pub file: Option<PathBuf>,
+    /// Headings of the section in a project page that says how to fix what the rule finds; the
+    /// summary gives that section's first paragraph beside the rule.
+    pub fix_headings: Vec<String>,
+}
+
+impl Default for Summary {
+    fn default() -> Self {
+        Self {
+            file: None,
+            fix_headings: vec!["How to fix correctly".to_owned()],
+        }
+    }
 }
 
 /// Per-tool switches. A tool whose own configuration file is absent reports itself as skipped.
@@ -210,6 +262,43 @@ impl Config {
             .record
             .validate()
             .map_err(|problems| Error::Usage(format!("{}: [record] {problems}", path.display())))?;
+        let mut problems = Vec::new();
+        for (index, stage) in config.stages.iter().enumerate() {
+            problems.extend(stage.problems());
+            let earlier = config.stages.iter().take(index);
+            if earlier.into_iter().any(|other| other.name == stage.name) {
+                problems.push(format!("stage `{}` is declared twice", stage.name));
+            }
+            if crate::tools::Tool::from_name(&stage.name).is_some() {
+                problems.push(format!(
+                    "stage `{}` has the name of a built-in tool",
+                    stage.name
+                ));
+            }
+        }
+        for resolver in &config.resolvers {
+            if let Err(error) = globset::Glob::new(&resolver.matches) {
+                problems.push(format!("resolver `{}`: {error}", resolver.matches));
+            }
+            if resolver.text.trim().is_empty() {
+                problems.push(format!("resolver `{}` has no text", resolver.matches));
+            }
+        }
+        for workspace in &config.workspaces {
+            if !root.join(workspace).join("Cargo.toml").is_file() {
+                problems.push(format!(
+                    "workspace `{}` has no Cargo.toml",
+                    workspace.display()
+                ));
+            }
+        }
+        if !problems.is_empty() {
+            return Err(Error::Usage(format!(
+                "{}: {}",
+                path.display(),
+                problems.join("; ")
+            )));
+        }
         Ok(config)
     }
 }

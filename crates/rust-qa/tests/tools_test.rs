@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use rust_qa::config::{Config, MutantsMode};
-use rust_qa::pipeline::Phase;
-use rust_qa::tools::{Context, Tool, owning_packages, plan, select};
+use rust_qa::pipeline::{Phase, Step};
+use rust_qa::tools::{Context, Tool, library_flags, owning_packages, plan, select};
 
 #[test]
 fn catalogue_is_ordered_format_then_detectors_then_runners() {
@@ -42,7 +42,14 @@ fn selection_is_canonical_order_regardless_of_request_order() {
         &config,
     )
     .unwrap();
-    assert_eq!(picked, vec![Tool::Fmt, Tool::Clippy, Tool::Test]);
+    assert_eq!(
+        picked,
+        vec![
+            Step::Tool(Tool::Fmt),
+            Step::Tool(Tool::Clippy),
+            Step::Tool(Tool::Test)
+        ]
+    );
 }
 
 #[test]
@@ -50,9 +57,12 @@ fn default_selection_is_every_enabled_tool() {
     let mut config = Config::default();
     config.tools.coverage = false;
     let picked = select(&[], &config).unwrap();
-    assert!(!picked.contains(&Tool::Audit), "audit is off by default");
-    assert!(!picked.contains(&Tool::Coverage));
-    assert!(picked.contains(&Tool::Dylint));
+    assert!(
+        !picked.contains(&Step::Tool(Tool::Audit)),
+        "audit is off by default"
+    );
+    assert!(!picked.contains(&Step::Tool(Tool::Coverage)));
+    assert!(picked.contains(&Step::Tool(Tool::Dylint)));
 }
 
 #[test]
@@ -193,16 +203,16 @@ fn ast_grep_runs_project_rules_then_the_bundled_pack_over_the_scope_or_the_whole
     assert_eq!(
         line(Tool::AstGrep, &ctx),
         vec![
-            "ast-grep scan",
-            "ast-grep scan --rule target/rust-qa/ast-grep/rqaci-pack.yml"
+            "ast-grep scan --json=compact",
+            "ast-grep scan --json=compact --rule target/rust-qa/ast-grep/rqaci-pack.yml"
         ]
     );
     ctx.scope = vec![PathBuf::from("src/lib.rs")];
     assert_eq!(
         line(Tool::AstGrep, &ctx),
         vec![
-            "ast-grep scan src/lib.rs",
-            "ast-grep scan --rule target/rust-qa/ast-grep/rqaci-pack.yml src/lib.rs"
+            "ast-grep scan --json=compact src/lib.rs",
+            "ast-grep scan --json=compact --rule target/rust-qa/ast-grep/rqaci-pack.yml src/lib.rs"
         ]
     );
 }
@@ -216,7 +226,9 @@ fn ast_grep_bundled_pack_runs_without_a_project_sgconfig_and_honours_scan_exclud
     let (_dir, ctx) = ast_grep_context(config, false);
     assert_eq!(
         line(Tool::AstGrep, &ctx),
-        vec!["ast-grep scan --rule target/rust-qa/ast-grep/rqaci-pack.yml --globs !fixtures/**"]
+        vec![
+            "ast-grep scan --json=compact --rule target/rust-qa/ast-grep/rqaci-pack.yml --globs !fixtures/**"
+        ]
     );
 }
 
@@ -225,7 +237,10 @@ fn ast_grep_bundled_pack_switched_off_leaves_only_project_rules() {
     let mut config = Config::default();
     config.ast_grep.bundled = false;
     let (_dir, ctx) = ast_grep_context(config.clone(), true);
-    assert_eq!(line(Tool::AstGrep, &ctx), vec!["ast-grep scan"]);
+    assert_eq!(
+        line(Tool::AstGrep, &ctx),
+        vec!["ast-grep scan --json=compact"]
+    );
     let (_dir, ctx) = ast_grep_context(config, false);
     assert_eq!(line(Tool::AstGrep, &ctx), Vec::<String>::new());
 }
@@ -236,7 +251,7 @@ fn dylint_loads_every_configured_library() {
     let planned = plan(Tool::Dylint, &ctx);
     assert_eq!(
         format!("{} {}", planned[0].program, planned[0].args.join(" ")),
-        "cargo dylint --all --workspace -- --all-targets --all-features"
+        "cargo dylint --all --workspace -- --all-targets --all-features --message-format=json"
     );
 }
 
@@ -258,4 +273,203 @@ fn tools_do_not_inherit_the_package_environment_of_cargo_run() {
         !removed.iter().any(|r| r == "CARGO" || r == "PATH"),
         "only the package description is removed: {removed:?}"
     );
+}
+
+#[test]
+fn cargo_runs_locked_when_the_workspace_has_a_lock_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Cargo.lock"), "").unwrap();
+    let mut ctx = context(Config::default());
+    ctx.root = dir.path().to_path_buf();
+    assert_eq!(
+        line(Tool::Clippy, &ctx),
+        vec!["cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"]
+    );
+    assert_eq!(
+        line(Tool::Dylint, &ctx),
+        vec![
+            "cargo dylint --all --workspace -- --all-targets --all-features --locked --message-format=json"
+        ]
+    );
+    assert_eq!(
+        line(Tool::Test, &ctx),
+        vec![
+            "cargo nextest run --workspace --all-features --locked",
+            "cargo test --workspace --all-features --doc --locked"
+        ]
+    );
+    assert_eq!(
+        line(Tool::Coverage, &ctx),
+        vec!["cargo llvm-cov nextest --workspace --all-features --locked --fail-under-lines 80"]
+    );
+}
+
+fn with_workspace() -> (tempfile::TempDir, Context) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\n[workspace.metadata.dylint]\nlibraries = [{ path = \"lints\" }, \
+         { git = \"https://example.com/l\", tag = \"v1\", pattern = \"lib\" }]\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("lints")).unwrap();
+    std::fs::write(root.join("lints/Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(root.join("lints/Cargo.lock"), "").unwrap();
+    let config = Config {
+        workspaces: vec![PathBuf::from("lints")],
+        ..Config::default()
+    };
+    let mut ctx = context(config);
+    ctx.root = root.to_path_buf();
+    (dir, ctx)
+}
+
+fn located(tool: Tool, ctx: &Context) -> Vec<(Option<PathBuf>, bool, String)> {
+    plan(tool, ctx)
+        .into_iter()
+        .map(|c| {
+            (
+                c.dir.clone(),
+                c.own_toolchain,
+                format!("{} {}", c.program, c.args.join(" ")),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_further_workspace_is_formatted_linted_and_tested_in_its_own_directory_and_toolchain() {
+    let (_dir, mut ctx) = with_workspace();
+    ctx.fix = false;
+    let lints = Some(PathBuf::from("lints"));
+    assert_eq!(
+        located(Tool::Fmt, &ctx),
+        vec![
+            (None, false, "cargo fmt --all --check".to_owned()),
+            (lints.clone(), true, "cargo fmt --all --check".to_owned())
+        ]
+    );
+    assert_eq!(
+        located(Tool::Clippy, &ctx)[1],
+        (
+            lints.clone(),
+            true,
+            "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+                .to_owned()
+        )
+    );
+    assert_eq!(
+        located(Tool::Test, &ctx)[2],
+        (
+            lints,
+            true,
+            "cargo test --workspace --all-features --locked".to_owned()
+        )
+    );
+    assert_eq!(
+        located(Tool::Coverage, &ctx).len(),
+        1,
+        "coverage stays with the main workspace"
+    );
+}
+
+#[test]
+fn a_further_workspace_loads_each_dylint_library_of_the_root() {
+    let (dir, ctx) = with_workspace();
+    let planned = located(Tool::Dylint, &ctx);
+    let root = dir.path().display();
+    assert_eq!(planned.len(), 3);
+    assert_eq!(
+        planned[1].2,
+        format!(
+            "cargo dylint --path {root}/lints --workspace -- --all-targets --all-features --locked --message-format=json"
+        )
+    );
+    assert_eq!(
+        planned[2].2,
+        "cargo dylint --git https://example.com/l --tag v1 --pattern lib --workspace -- --all-targets --all-features --locked --message-format=json"
+    );
+}
+
+#[test]
+fn library_flags_translate_path_and_git_entries() {
+    let entry: toml::Table =
+        toml::from_str("git = \"https://example.com/l\"\nrev = \"abc\"\npattern = \"p\"\n")
+            .unwrap();
+    assert_eq!(
+        library_flags(std::path::Path::new("/ws"), &entry).join(" "),
+        "--git https://example.com/l --rev abc --pattern p"
+    );
+}
+
+#[test]
+fn a_subset_run_checks_only_the_workspaces_that_hold_a_scoped_path() {
+    let (_dir, mut ctx) = with_workspace();
+    ctx.scope = vec![PathBuf::from("lints/src/lib.rs")];
+    let planned = located(Tool::Clippy, &ctx);
+    assert_eq!(planned.len(), 1, "{planned:?}");
+    assert_eq!(planned[0].0, Some(PathBuf::from("lints")));
+    assert!(planned[0].2.contains("--message-format=json"));
+    ctx.scope = vec![PathBuf::from("src/lib.rs")];
+    ctx.packages = vec!["a".to_owned()];
+    let planned = located(Tool::Clippy, &ctx);
+    assert_eq!(planned.len(), 1);
+    assert_eq!(planned[0].0, None);
+}
+
+#[test]
+fn a_command_with_its_own_toolchain_does_not_inherit_the_toolchain_variables() {
+    let (_dir, ctx) = with_workspace();
+    let cmd = plan(Tool::Fmt, &ctx).pop().unwrap();
+    let removed: Vec<String> = cmd
+        .command()
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    // cargo sets these for this test binary, as rustup and cargo would for rust-qa.
+    assert!(removed.iter().any(|r| r == "CARGO"), "{removed:?}");
+    assert!(!removed.iter().any(|r| r == "CARGO_HOME" || r == "PATH"));
+}
+
+#[test]
+fn ast_grep_runs_the_project_rule_tests_when_sgconfig_declares_them() {
+    let (dir, ctx) = ast_grep_context(Config::default(), true);
+    std::fs::write(
+        dir.path().join("sgconfig.yml"),
+        "ruleDirs: [rules]\ntestConfigs:\n  - testDir: rule-tests\n",
+    )
+    .unwrap();
+    assert_eq!(
+        line(Tool::AstGrep, &ctx).last().map(String::as_str),
+        Some("ast-grep test --skip-snapshot-tests")
+    );
+}
+
+#[test]
+fn stages_are_selected_by_name_and_run_in_their_phase() {
+    let config: Config = toml::from_str(
+        "[[stage]]\nname = \"tsc\"\nphase = \"detectors\"\nsays = \"s\"\nfix = \"f\"\ncommand = [\"tsc\"]\n",
+    )
+    .unwrap();
+    let picked = select(&["tsc".to_owned(), "fmt".to_owned()], &config).unwrap();
+    assert_eq!(
+        picked,
+        vec![
+            Step::Tool(Tool::Fmt),
+            Step::Stage {
+                index: 0,
+                phase: Phase::Detectors
+            }
+        ]
+    );
+    assert!(select(&[], &config).unwrap().contains(&Step::Stage {
+        index: 0,
+        phase: Phase::Detectors
+    }));
+    let unknown = select(&["nope".to_owned()], &config)
+        .unwrap_err()
+        .to_string();
+    assert!(unknown.contains("tsc"), "{unknown}");
 }

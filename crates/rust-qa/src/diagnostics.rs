@@ -16,6 +16,12 @@ pub struct Diagnostic {
     pub rendered: String,
     /// Files of the primary spans.
     pub files: Vec<PathBuf>,
+    /// The message alone, without the rendering's source excerpt.
+    pub message: String,
+    /// One-based line of the first primary span, or zero.
+    pub line: usize,
+    /// One-based column of the first primary span, or zero.
+    pub column: usize,
 }
 
 impl Diagnostic {
@@ -23,6 +29,26 @@ impl Diagnostic {
     #[must_use]
     pub fn is_error(&self) -> bool {
         self.level.starts_with("error")
+    }
+
+    /// The diagnostic with its files named from `root`, for cargo run in the workspace at
+    /// `prefix` (relative to `root`, empty for the root itself), which names them from there.
+    #[must_use]
+    pub fn under(mut self, root: &Path, prefix: &Path) -> Self {
+        self.files = self
+            .files
+            .into_iter()
+            .map(|file| {
+                let file = if file.is_absolute() {
+                    file
+                } else {
+                    prefix.join(file)
+                };
+                file.strip_prefix(root)
+                    .map_or(file.clone(), Path::to_path_buf)
+            })
+            .collect();
+        self
     }
 }
 
@@ -42,7 +68,7 @@ pub fn parse_cargo_messages(stream: &str) -> Vec<Diagnostic> {
                     .unwrap_or("")
                     .to_owned()
             };
-            let files = message
+            let primary: Vec<&Value> = message
                 .get("spans")
                 .and_then(Value::as_array)
                 .map(|spans| {
@@ -51,11 +77,22 @@ pub fn parse_cargo_messages(stream: &str) -> Vec<Diagnostic> {
                         .filter(|span| {
                             span.get("is_primary").and_then(Value::as_bool) == Some(true)
                         })
-                        .filter_map(|span| span.get("file_name").and_then(Value::as_str))
-                        .map(PathBuf::from)
                         .collect()
                 })
                 .unwrap_or_default();
+            let files = primary
+                .iter()
+                .filter_map(|span| span.get("file_name").and_then(Value::as_str))
+                .map(PathBuf::from)
+                .collect();
+            let position = |key: &str| {
+                primary
+                    .first()
+                    .and_then(|span| span.get(key))
+                    .and_then(Value::as_u64)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(0)
+            };
             Diagnostic {
                 code: message
                     .get("code")
@@ -65,6 +102,9 @@ pub fn parse_cargo_messages(stream: &str) -> Vec<Diagnostic> {
                 level: text("level"),
                 rendered: text("rendered"),
                 files,
+                message: text("message"),
+                line: position("line_start"),
+                column: position("column_start"),
             }
         })
         .collect()

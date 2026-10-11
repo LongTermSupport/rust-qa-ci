@@ -151,3 +151,91 @@ fn unknown_identifiers_do_not_resolve() {
     assert!(resolver.resolve("no_such_rule_anywhere").unwrap().is_none());
     assert!(resolver.resolve("vendor::thing").unwrap().is_none());
 }
+
+#[test]
+fn a_lint_name_resolves_to_its_page_under_the_identifier_it_prints() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("docs/defences")).unwrap();
+    std::fs::write(
+        dir.path().join("docs/defences/PROJ-RS-ERROR-HIDDEN.md"),
+        "# PROJ-RS-ERROR-HIDDEN\n",
+    )
+    .unwrap();
+    let resolver = Resolver::new(dir.path(), Path::new("docs/defences"));
+    let doc = resolver.resolve("proj_rs_error_hidden").unwrap().unwrap();
+    assert_eq!(
+        doc.source,
+        Source::Project(Path::new("docs/defences/PROJ-RS-ERROR-HIDDEN.md").to_path_buf())
+    );
+}
+
+#[test]
+fn a_project_stage_documents_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let config: rust_qa::config::Config = toml::from_str(
+        "[[stage]]\nname = \"tsc\"\nphase = \"detectors\"\nsays = \"TypeScript type-checks\"\n\
+         fix = \"Correct the types the compiler names\"\ncommand = [\"tsc\"]\n",
+    )
+    .unwrap();
+    let resolver = Resolver::for_config(dir.path(), &config);
+    let doc = resolver.resolve("tsc").unwrap().unwrap();
+    assert_eq!(doc.source, Source::Stage);
+    assert!(doc.text.contains("Correct the types the compiler names"));
+}
+
+#[test]
+fn pages_documenting_no_listed_identifier_are_orphans() {
+    let dir = tempfile::tempdir().unwrap();
+    for page in [
+        "README.md",
+        "clippy.unwrap_used.md",
+        "PROJ-RULE.md",
+        "gone-rule.md",
+        "notes.txt",
+    ] {
+        let path = dir.path().join("docs/defences").join(page);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "# x\n").unwrap();
+    }
+    let ids = ["clippy::unwrap_used".to_owned(), "proj_rule".to_owned()];
+    assert_eq!(
+        docs::orphans(dir.path(), Path::new("docs/defences"), &ids).unwrap(),
+        vec![Path::new("docs/defences/gone-rule.md").to_path_buf()]
+    );
+    assert_eq!(
+        docs::orphans(dir.path(), Path::new("docs/none"), &ids).unwrap(),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+#[test]
+fn the_fix_section_of_a_page_is_its_first_paragraph_on_one_line() {
+    let page = "# R\n\n## Why\n\nBecause.\n\n## What to do instead\n\nQuote the value\nand move the comment.\n\nMore detail.\n";
+    let headings = [
+        "How to fix correctly".to_owned(),
+        "What to do instead".to_owned(),
+    ];
+    assert_eq!(
+        docs::section_paragraph(page, &headings).as_deref(),
+        Some("Quote the value and move the comment.")
+    );
+    assert_eq!(docs::section_paragraph(page, &headings[..1]), None);
+}
+
+#[test]
+fn a_fix_paragraph_that_introduces_an_example_ends_as_a_sentence() {
+    let page = "## How to fix correctly\n\nWrap the error:\n\n```rust\nx\n```\n";
+    assert_eq!(
+        docs::section_paragraph(page, &["How to fix correctly".to_owned()]).as_deref(),
+        Some("Wrap the error.")
+    );
+}
+
+#[test]
+fn a_fix_paragraph_whose_last_sentence_only_introduces_a_list_drops_that_sentence() {
+    let page = "## How to fix correctly\n\nFix the script. The usual constructions:\n\n- Quote.\n";
+    assert_eq!(
+        docs::section_paragraph(page, &["How to fix correctly".to_owned()]).as_deref(),
+        Some("Fix the script.")
+    );
+}

@@ -145,3 +145,23 @@ fn ignore_files_above_the_root_do_not_hide_the_workspace() {
     let files = workspace_files(&root, &[], &none, |_| true);
     assert_eq!(files, vec![PathBuf::from("src/lib.rs")]);
 }
+
+#[test]
+fn dylint_library_entries_are_read_from_the_root_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "Cargo.toml",
+        "[workspace]\n[workspace.metadata.dylint]\nlibraries = [\n  { path = \"lints\" },\n  \
+         { git = \"https://example.com/l\", rev = \"abc\", pattern = \"lints/x\" },\n]\n",
+    );
+    let libraries = rust_qa::manifest::dylint_libraries(dir.path()).unwrap();
+    assert_eq!(libraries.len(), 2);
+    assert_eq!(libraries[0]["path"].as_str(), Some("lints"));
+    assert_eq!(libraries[1]["rev"].as_str(), Some("abc"));
+    write(dir.path(), "Cargo.toml", "[workspace]\n");
+    assert_eq!(
+        rust_qa::manifest::dylint_libraries(dir.path()).unwrap(),
+        Vec::<toml::Table>::new()
+    );
+}

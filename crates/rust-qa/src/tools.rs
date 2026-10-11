@@ -1,4 +1,5 @@
-//! Tool catalogue, command planning and the executor that runs tools against a workspace.
+//! Tool catalogue, command planning and the executor that runs tools and project stages against a
+//! workspace.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -7,12 +8,14 @@ use serde_json::Value;
 
 use crate::config::{Config, MutantsMode};
 use crate::date::Date;
-use crate::defences::{DylintLint, enumerate};
-use crate::diagnostics::{dedupe, in_scope, parse_cargo_messages};
+use crate::defences::{DylintLint, Engine, enumerate};
+use crate::diagnostics::{Diagnostic, dedupe, in_scope, parse_cargo_messages};
 use crate::finding::Finding;
-use crate::manifest::has_dylint_metadata;
-use crate::pipeline::{Executor, Outcome, Phase};
-use crate::record::Record;
+use crate::hit::{self, Hit};
+use crate::manifest::{dylint_libraries, has_dylint_metadata};
+use crate::pipeline::{Executor, Outcome, Phase, Step};
+use crate::record::{Covers, Record, lint_key, same_rule};
+use crate::stage::{Output, Stage};
 use crate::{Error, ast_grep, builtin, summary, suppression};
 
 /// Every tool, declared in execution order.
@@ -138,33 +141,77 @@ impl Tool {
     }
 }
 
-/// Tools to run: the named ones (explicit requests win over configuration), or every enabled tool.
+/// Every step of a default run: each enabled tool, then each project stage, in pipeline order.
+#[must_use]
+pub fn all_steps(config: &Config) -> Vec<Step> {
+    let mut steps: Vec<Step> = Tool::ALL
+        .into_iter()
+        .filter(|tool| tool.enabled(config))
+        .map(Step::Tool)
+        .collect();
+    steps.extend(
+        config
+            .stages
+            .iter()
+            .enumerate()
+            .map(|(index, stage)| Step::Stage {
+                index,
+                phase: stage.phase,
+            }),
+    );
+    steps.sort();
+    steps
+}
+
+/// The name a step is selected and reported by.
+#[must_use]
+pub fn step_name(step: Step, config: &Config) -> String {
+    match step {
+        Step::Tool(tool) => tool.name().to_owned(),
+        Step::Stage { index, .. } => config
+            .stages
+            .get(index)
+            .map_or_else(|| format!("stage #{index}"), |stage| stage.name.clone()),
+    }
+}
+
+/// Steps to run: the named tools and stages (explicit requests win over configuration), or every
+/// enabled tool and every stage.
 ///
 /// # Errors
 /// Returns [`Error::Usage`] for an unknown name.
-pub fn select(names: &[String], config: &Config) -> Result<Vec<Tool>, Error> {
-    let mut tools = if names.is_empty() {
-        Tool::ALL
-            .into_iter()
-            .filter(|tool| tool.enabled(config))
-            .collect()
-    } else {
-        names
-            .iter()
-            .map(|name| {
-                Tool::from_name(name).ok_or_else(|| {
-                    let known: Vec<&str> = Tool::ALL.iter().map(|t| t.name()).collect();
-                    Error::Usage(format!(
-                        "unknown tool `{name}`; known tools: {}",
-                        known.join(", ")
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    tools.sort();
-    tools.dedup();
-    Ok(tools)
+pub fn select(names: &[String], config: &Config) -> Result<Vec<Step>, Error> {
+    if names.is_empty() {
+        return Ok(all_steps(config));
+    }
+    let mut steps = names
+        .iter()
+        .map(|name| {
+            if let Some(tool) = Tool::from_name(name) {
+                return Ok(Step::Tool(tool));
+            }
+            if let Some((index, stage)) = config
+                .stages
+                .iter()
+                .enumerate()
+                .find(|(_, stage)| stage.name == *name)
+            {
+                return Ok(Step::Stage {
+                    index,
+                    phase: stage.phase,
+                });
+            }
+            let mut known: Vec<&str> = Tool::ALL.iter().map(|t| t.name()).collect();
+            known.extend(config.stages.iter().map(|s| s.name.as_str()));
+            Err(Error::Usage(format!(
+                "unknown tool `{name}`; known tools and stages: {}",
+                known.join(", ")
+            )))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    steps.sort();
+    steps.dedup();
+    Ok(steps)
 }
 
 /// Everything a run needs to know about the workspace.
@@ -230,6 +277,21 @@ impl Context {
             ci,
             fix,
         })
+    }
+
+    /// The further workspaces this run checks: all of them, or those holding a scoped path.
+    #[must_use]
+    pub fn workspaces(&self) -> Vec<&Path> {
+        self.config
+            .workspaces
+            .iter()
+            .map(PathBuf::as_path)
+            .filter(|dir| self.scope.is_empty() || self.scope.iter().any(|p| p.starts_with(dir)))
+            .collect()
+    }
+
+    fn main_in_scope(&self) -> bool {
+        self.scope.is_empty() || !self.packages.is_empty()
     }
 }
 
@@ -303,6 +365,13 @@ pub struct Cmd {
     pub program: String,
     /// Arguments.
     pub args: Vec<String>,
+    /// Working directory relative to the root; `None` is the root.
+    pub dir: Option<PathBuf>,
+    /// Whether the command chooses its own Rust toolchain (from its directory's
+    /// `rust-toolchain.toml`) rather than inheriting the one `rust-qa` runs under.
+    pub own_toolchain: bool,
+    /// Variables set for the command.
+    pub env: Vec<(String, String)>,
 }
 
 impl Cmd {
@@ -310,6 +379,9 @@ impl Cmd {
         Self {
             program: program.to_owned(),
             args: args.iter().map(|a| (*a).to_owned()).collect(),
+            dir: None,
+            own_toolchain: false,
+            env: Vec::new(),
         }
     }
 
@@ -323,21 +395,45 @@ impl Cmd {
         self
     }
 
-    fn display(&self) -> String {
-        format!("{} {}", self.program, self.args.join(" "))
+    fn locked(self, locked: bool) -> Self {
+        if locked { self.arg("--locked") } else { self }
+    }
+
+    /// Runs the command in workspace `dir`, with that workspace's own toolchain.
+    fn within(mut self, dir: &Path) -> Self {
+        self.dir = Some(dir.to_path_buf());
+        self.own_toolchain = true;
+        self
+    }
+
+    /// The command line, for the operator.
+    #[must_use]
+    pub fn display(&self) -> String {
+        let line = format!("{} {}", self.program, self.args.join(" "));
+        let line = line.trim_end().to_owned();
+        match &self.dir {
+            Some(dir) => format!("(cd {} && {line})", dir.display()),
+            None => line,
+        }
     }
 
     /// The process to spawn, without the variables `cargo run` sets to describe the package it
     /// runs: they describe rust-qa's caller, not the workspace under check, and tools act on
     /// them (cargo-machete takes `CARGO_PKG_NAME` to mean it was not started as `cargo machete`).
+    /// A command with its own toolchain also loses the variables rustup and cargo set for the
+    /// toolchain `rust-qa` runs under, which would otherwise override that choice.
     #[must_use]
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.args);
         for (name, _) in std::env::vars_os() {
-            if is_package_variable(&name.to_string_lossy()) {
+            let name = name.to_string_lossy().into_owned();
+            if is_package_variable(&name) || (self.own_toolchain && is_toolchain_variable(&name)) {
                 command.env_remove(name);
             }
+        }
+        for (name, value) in &self.env {
+            command.env(name, value);
         }
         command
     }
@@ -358,13 +454,46 @@ fn is_package_variable(name: &str) -> bool {
         )
 }
 
+/// Whether `name` is a variable that pins the toolchain or the build: rustup's, rustc's and
+/// cargo's own, except `CARGO_HOME`, where the tools are installed.
+fn is_toolchain_variable(name: &str) -> bool {
+    name == "RUSTUP_TOOLCHAIN"
+        || name.starts_with("RUSTC")
+        || name.starts_with("RUSTDOC")
+        || (name.starts_with("CARGO") && name != "CARGO_HOME")
+}
+
 /// Mutation diff location for `diff` mode, relative to the root.
 pub const MUTANTS_DIFF: &str = "target/rust-qa/mutants.diff";
 
-/// External commands for `tool` (empty for in-process tools and disabled modes).
+/// External commands for `tool` (empty for in-process tools and disabled modes): the workspace's
+/// own, then each further workspace's.
 #[must_use]
 pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
+    let package_bound = matches!(
+        tool,
+        Tool::Fmt | Tool::Clippy | Tool::Dylint | Tool::Test | Tool::Coverage
+    );
+    let mut cmds = if !package_bound || ctx.main_in_scope() {
+        main_plan(tool, ctx)
+    } else {
+        Vec::new()
+    };
+    for dir in ctx.workspaces() {
+        cmds.extend(workspace_plan(tool, ctx, dir));
+    }
+    cmds
+}
+
+/// Whether the workspace at `dir` has a `Cargo.lock`, so that cargo runs with `--locked` and a stale
+/// lock file fails rather than being rewritten.
+fn has_lock(dir: &Path) -> bool {
+    dir.join("Cargo.lock").is_file()
+}
+
+fn main_plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
     let scoped = !ctx.scope.is_empty();
+    let locked = has_lock(&ctx.root);
     let packages: Vec<String> = if scoped {
         ctx.packages
             .iter()
@@ -394,17 +523,19 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
             let cmd = Cmd::new("cargo", &["clippy"])
                 .args(packages)
                 .arg("--all-targets")
-                .arg("--all-features");
+                .arg("--all-features")
+                .locked(locked);
             vec![json(cmd).arg("--").arg("-D").arg("warnings")]
         }
-        Tool::Dylint => {
-            let cmd = Cmd::new("cargo", &["dylint", "--all"])
+        Tool::Dylint => vec![
+            Cmd::new("cargo", &["dylint", "--all"])
                 .args(packages)
                 .arg("--")
                 .arg("--all-targets")
-                .arg("--all-features");
-            vec![json(cmd)]
-        }
+                .arg("--all-features")
+                .locked(locked)
+                .arg("--message-format=json"),
+        ],
         Tool::AstGrep => ast_grep_plan(ctx),
         Tool::Deny => vec![Cmd::new(
             "cargo",
@@ -416,14 +547,16 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
             let mut cmds = vec![
                 Cmd::new("cargo", &["nextest", "run"])
                     .args(packages.clone())
-                    .arg("--all-features"),
+                    .arg("--all-features")
+                    .locked(locked),
             ];
             if ctx.doctests {
                 cmds.push(
                     Cmd::new("cargo", &["test"])
                         .args(packages)
                         .arg("--all-features")
-                        .arg("--doc"),
+                        .arg("--doc")
+                        .locked(locked),
                 );
             }
             cmds
@@ -432,6 +565,7 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
             Cmd::new("cargo", &["llvm-cov", "nextest"])
                 .args(packages)
                 .arg("--all-features")
+                .locked(locked)
                 .arg("--fail-under-lines")
                 .arg(ctx.config.coverage.fail_under_lines.to_string()),
         ],
@@ -447,13 +581,90 @@ pub fn plan(tool: Tool, ctx: &Context) -> Vec<Cmd> {
     }
 }
 
+/// Commands for a further workspace, run in its directory with its own toolchain. Coverage,
+/// mutation testing and the dependency runners stay with the main workspace.
+fn workspace_plan(tool: Tool, ctx: &Context, dir: &Path) -> Vec<Cmd> {
+    let scoped = !ctx.scope.is_empty();
+    let locked = has_lock(&ctx.root.join(dir));
+    match tool {
+        Tool::Fmt => {
+            let cmd = Cmd::new("cargo", &["fmt", "--all"]);
+            vec![if ctx.fix { cmd } else { cmd.arg("--check") }.within(dir)]
+        }
+        Tool::Clippy => {
+            let cmd = Cmd::new(
+                "cargo",
+                &["clippy", "--workspace", "--all-targets", "--all-features"],
+            )
+            .locked(locked);
+            let cmd = if scoped {
+                cmd.arg("--message-format=json")
+            } else {
+                cmd
+            };
+            vec![cmd.arg("--").arg("-D").arg("warnings").within(dir)]
+        }
+        Tool::Dylint => dylint_libraries(&ctx.root)
+            .unwrap_or_default()
+            .iter()
+            .map(|library| {
+                Cmd::new("cargo", &["dylint"])
+                    .args(library_flags(&ctx.root, library))
+                    .arg("--workspace")
+                    .arg("--")
+                    .arg("--all-targets")
+                    .arg("--all-features")
+                    .locked(locked)
+                    .arg("--message-format=json")
+                    .within(dir)
+            })
+            .collect(),
+        Tool::Test => vec![
+            Cmd::new("cargo", &["test", "--workspace", "--all-features"])
+                .locked(locked)
+                .within(dir),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// `cargo dylint` options loading one `[workspace.metadata.dylint]` library entry from another
+/// directory: a `path` made absolute, or a `git` source with its revision and pattern.
+#[must_use]
+pub fn library_flags(root: &Path, library: &toml::Table) -> Vec<String> {
+    let text = |key: &str| library.get(key).and_then(toml::Value::as_str);
+    let mut flags = Vec::new();
+    if let Some(path) = text("path") {
+        flags.push("--path".to_owned());
+        flags.push(root.join(path).display().to_string());
+    }
+    if let Some(url) = text("git") {
+        flags.push("--git".to_owned());
+        flags.push(url.to_owned());
+        for key in ["rev", "tag", "branch"] {
+            if let Some(value) = text(key) {
+                flags.push(format!("--{key}"));
+                flags.push(value.to_owned());
+            }
+        }
+    }
+    if let Some(pattern) = text("pattern") {
+        flags.push("--pattern".to_owned());
+        flags.push(pattern.to_owned());
+    }
+    flags
+}
+
 /// The project's own rules (when `sgconfig.yml` exists), then the bundled pack (unless switched
-/// off; excluding `scan_exclude`, since the project's ast-grep ignores do not apply to it).
+/// off; excluding `scan_exclude`, since the project's ast-grep ignores do not apply to it), each
+/// printing JSON for the record to be applied; then the project rules' own tests, when
+/// `sgconfig.yml` declares `testConfigs`.
 fn ast_grep_plan(ctx: &Context) -> Vec<Cmd> {
     let scope = || ctx.scope.iter().map(|p| p.display().to_string());
     let mut cmds = Vec::new();
-    if ctx.root.join("sgconfig.yml").is_file() {
-        cmds.push(Cmd::new("ast-grep", &["scan"]).args(scope()));
+    let project = ctx.root.join("sgconfig.yml").is_file();
+    if project {
+        cmds.push(Cmd::new("ast-grep", &["scan", "--json=compact"]).args(scope()));
     }
     if ctx.config.ast_grep.bundled {
         let excludes = ctx
@@ -462,26 +673,47 @@ fn ast_grep_plan(ctx: &Context) -> Vec<Cmd> {
             .iter()
             .flat_map(|glob| ["--globs".to_owned(), format!("!{glob}")]);
         cmds.push(
-            Cmd::new("ast-grep", &["scan", "--rule", ast_grep::PACK_PATH])
-                .args(excludes)
-                .args(scope()),
+            Cmd::new(
+                "ast-grep",
+                &["scan", "--json=compact", "--rule", ast_grep::PACK_PATH],
+            )
+            .args(excludes)
+            .args(scope()),
         );
+    }
+    if project && ast_grep::has_tests(&ctx.root).unwrap_or(false) {
+        cmds.push(Cmd::new("ast-grep", &["test", "--skip-snapshot-tests"]));
     }
     cmds
 }
 
-/// Runs tools for real against the workspace in `ctx`.
+/// Lists the lints of the configured dylint libraries; normally
+/// [`crate::defences::dylint_lints`].
+pub type DylintLister = fn(&Path) -> Result<Vec<DylintLint>, Error>;
+
+/// Runs tools and stages for real against the workspace in `ctx`.
 pub struct RealExecutor {
     /// Workspace context.
     pub ctx: Context,
-    /// Lists dylint lints (for the summary); normally [`crate::defences::dylint_lints`].
-    pub dylint_lister: fn(&Path) -> Result<Vec<DylintLint>, Error>,
+    /// Lists dylint lints (for the summary and the dylint detector).
+    pub dylint_lister: DylintLister,
 }
 
 impl Executor for RealExecutor {
-    fn run(&mut self, tool: Tool) -> Outcome {
-        println!("==> [{}] {}", tool.phase().name(), tool.name());
-        match self.run_tool(tool) {
+    fn run(&mut self, step: Step) -> Outcome {
+        println!(
+            "==> [{}] {}",
+            step.phase().name(),
+            step_name(step, &self.ctx.config)
+        );
+        let result = match step {
+            Step::Tool(tool) => self.run_tool(tool),
+            Step::Stage { index, .. } => match self.ctx.config.stages.get(index) {
+                Some(stage) => self.stage(stage),
+                None => Err(Error::Usage(format!("no stage #{index}"))),
+            },
+        };
+        match result {
             Ok(outcome) => {
                 if let Outcome::Skipped(reason) = &outcome {
                     println!("    skipped: {reason}");
@@ -505,13 +737,13 @@ impl RealExecutor {
             tool,
             Tool::Fmt | Tool::Clippy | Tool::Dylint | Tool::Test | Tool::Coverage
         );
-        if scoped && package_bound && ctx.packages.is_empty() {
+        if scoped && package_bound && plan(tool, ctx).is_empty() {
             return Ok(Outcome::Skipped(
                 "no package owns the scoped paths".to_owned(),
             ));
         }
         match tool {
-            Tool::Record => Ok(self.record()),
+            Tool::Record => self.record(),
             Tool::Suppression => self.suppression(),
             Tool::Summary => self.summary(),
             Tool::Docs => self.docs(),
@@ -519,6 +751,7 @@ impl RealExecutor {
             Tool::Dylint if !has_dylint_metadata(root)? => Ok(Outcome::Skipped(
                 "no [workspace.metadata.dylint] libraries".to_owned(),
             )),
+            Tool::Dylint => self.dylint(),
             Tool::Deny if !root.join("deny.toml").is_file() => {
                 Ok(Outcome::Skipped("no deny.toml".to_owned()))
             }
@@ -526,7 +759,7 @@ impl RealExecutor {
                 Ok(Outcome::Skipped("mutants mode is off".to_owned()))
             }
             Tool::Mutants if ctx.config.mutants.mode == MutantsMode::Diff => self.mutants_diff(),
-            Tool::Clippy | Tool::Dylint if scoped => self.scoped_diagnostics(tool),
+            Tool::Clippy if scoped => self.scoped_diagnostics(tool),
             Tool::Fmt => {
                 let outcome = self.commands(tool)?;
                 if outcome == Outcome::Passed && ctx.ci && ctx.fix {
@@ -549,38 +782,51 @@ impl RealExecutor {
         }
     }
 
-    fn record(&self) -> Outcome {
+    fn load_record(&self) -> Result<Record, Error> {
+        Record::load(&self.ctx.root.join(&self.ctx.config.record.path))
+    }
+
+    fn record(&self) -> Result<Outcome, Error> {
         let ctx = &self.ctx;
         let policy = &ctx.config.record;
-        match crate::policy::gate(&ctx.root, policy, Date::today(), ctx.fix && !ctx.ci) {
-            Ok(report) => {
-                for line in report.status.to_string().lines() {
-                    println!("    {line}");
-                }
-                for note in &report.notes {
-                    println!("    note: {note}");
-                }
-                Self::report(&report.findings)
-            }
-            Err(error) => {
-                println!(
-                    "{}",
-                    Finding {
-                        rule: builtin::RECORD_INVALID,
-                        path: policy.path.clone(),
-                        line: 0,
-                        message: error.to_string(),
+        let mut findings =
+            match crate::policy::gate(&ctx.root, policy, Date::today(), ctx.fix && !ctx.ci) {
+                Ok(report) => {
+                    for line in report.status.to_string().lines() {
+                        println!("    {line}");
                     }
-                );
-                Outcome::Failed
-            }
+                    for note in &report.notes {
+                        println!("    note: {note}");
+                    }
+                    report.findings
+                }
+                Err(error) => vec![Finding {
+                    rule: builtin::RECORD_INVALID,
+                    path: policy.path.clone(),
+                    line: 0,
+                    message: error.to_string(),
+                }],
+            };
+        let record = self.load_record()?;
+        if record
+            .exceptions
+            .iter()
+            .any(|e| e.covers == Covers::Findings)
+        {
+            let defences = enumerate(&ctx.root, &ctx.config, &self.dylint_lister)?;
+            findings.extend(findings_exceptions_unhosted(
+                &record,
+                &defences,
+                &policy.path,
+            ));
         }
+        Ok(Self::report(&findings))
     }
 
     fn suppression(&self) -> Result<Outcome, Error> {
         let ctx = &self.ctx;
         let record_path = &ctx.config.record.path;
-        let record = Record::load(&ctx.root.join(record_path))?;
+        let record = self.load_record()?;
         let exclude = crate::glob_set(&ctx.config.scan_exclude)?;
         let result = suppression::scan(&ctx.root, &ctx.scope, &exclude)?;
         let findings = suppression::check(&result, &record, record_path, ctx.scope.is_empty());
@@ -624,7 +870,7 @@ impl RealExecutor {
         let ctx = &self.ctx;
         let (ids, missing) = crate::docs::dangling(&ctx.root, &ctx.config, &self.dylint_lister)?;
         println!("    {} identifier(s) checked", ids.len());
-        let findings: Vec<Finding> = missing
+        let mut findings: Vec<Finding> = missing
             .into_iter()
             .map(|id| Finding {
                 rule: builtin::DOCS_DANGLING,
@@ -633,6 +879,16 @@ impl RealExecutor {
                 message: format!("`{id}` has no documentation"),
             })
             .collect();
+        findings.extend(
+            crate::docs::orphans(&ctx.root, &ctx.config.docs_dir, &ids)?
+                .into_iter()
+                .map(|page| Finding {
+                    rule: builtin::DOCS_ORPHAN,
+                    path: page,
+                    line: 0,
+                    message: "documents no identifier the gate lists; delete the page or restore its defence".to_owned(),
+                }),
+        );
         Ok(Self::report(&findings))
     }
 
@@ -645,30 +901,176 @@ impl RealExecutor {
         Ok(Outcome::Passed)
     }
 
+    fn spawn(&self, cmd: &Cmd) -> Command {
+        let mut command = cmd.command();
+        command.current_dir(match &cmd.dir {
+            Some(dir) => self.ctx.root.join(dir),
+            None => self.ctx.root.clone(),
+        });
+        command
+    }
+
     fn status(&self, cmd: &Cmd) -> Result<bool, Error> {
         println!("$ {}", cmd.display());
-        let status = cmd
-            .command()
-            .current_dir(&self.ctx.root)
+        let status = self
+            .spawn(cmd)
             .status()
             .map_err(|e| missing_tool(cmd, &e))?;
         Ok(status.success())
     }
 
-    /// Runs every planned scan, so project and bundled findings are reported together.
+    fn output(&self, cmd: &Cmd) -> Result<std::process::Output, Error> {
+        println!("$ {}", cmd.display());
+        self.spawn(cmd)
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|e| missing_tool(cmd, &e))
+    }
+
+    /// Prints the findings the record leaves, and on a full run the findings exceptions for
+    /// `hosted` rules that covered nothing; returns whether the gate passes.
+    fn conclude(&self, hits: Vec<Hit>, hosted: &[String]) -> Result<bool, Error> {
+        let record = self.load_record()?;
+        let applied = hit::apply(hits, &record);
+        for finding in &applied.kept {
+            println!("{finding}");
+        }
+        if applied.excepted > 0 {
+            println!(
+                "    {} finding(s) covered by exceptions in {}",
+                applied.excepted,
+                self.ctx.config.record.path.display()
+            );
+        }
+        let mut passed = applied.blocking() == 0;
+        if self.ctx.scope.is_empty() {
+            let stale = hit::unused(&record, &applied.used, hosted, &self.ctx.config.record.path);
+            passed &= stale.is_empty();
+            for finding in &stale {
+                println!("{finding}");
+            }
+        }
+        Ok(passed)
+    }
+
+    /// Runs every planned scan, so project and bundled findings are reported together, applies
+    /// the record, checks that every project rule is tested, and runs the project rules' tests.
     fn ast_grep(&self) -> Result<Outcome, Error> {
-        let cmds = plan(Tool::AstGrep, &self.ctx);
+        let ctx = &self.ctx;
+        let cmds = plan(Tool::AstGrep, ctx);
         if cmds.is_empty() {
             return Ok(Outcome::Skipped(
                 "no sgconfig.yml and the bundled pack is off".to_owned(),
             ));
         }
-        if self.ctx.config.ast_grep.bundled {
-            ast_grep::write_pack(&self.ctx.root)?;
+        if ctx.config.ast_grep.bundled {
+            ast_grep::write_pack(&ctx.root)?;
         }
         let mut passed = true;
+        let mut hits = Vec::new();
         for cmd in &cmds {
-            passed &= self.status(cmd)?;
+            if cmd.args.first().is_some_and(|a| a == "test") {
+                passed &= self.status(cmd)?;
+                continue;
+            }
+            let output = self.output(cmd)?;
+            if !matches!(output.status.code(), Some(0 | 1)) {
+                println!(
+                    "error: `{}` did not complete ({})",
+                    cmd.display(),
+                    output.status
+                );
+                passed = false;
+                continue;
+            }
+            match ast_grep::parse_matches(&String::from_utf8_lossy(&output.stdout)) {
+                Ok(found) => hits.extend(found),
+                Err(message) => {
+                    println!("error: `{}` printed no findings: {message}", cmd.display());
+                    passed = false;
+                }
+            }
+        }
+        let mut hosted: Vec<String> = ast_grep::bundled_ids().map(ToOwned::to_owned).collect();
+        if ctx.root.join("sgconfig.yml").is_file() {
+            let rules = crate::defences::ast_grep_rules(&ctx.root)?;
+            let tested = ast_grep::tested_rules(&ctx.root)?;
+            let untested: Vec<Finding> = rules
+                .iter()
+                .filter(|rule| rule.severity == "error" && !tested.contains(&rule.id))
+                .map(|rule| Finding {
+                    rule: builtin::RULES_UNTESTED,
+                    path: rule.file.clone(),
+                    line: 0,
+                    message: format!(
+                        "`{}` has no test case with both `valid` and `invalid` code in a testConfigs directory of sgconfig.yml",
+                        rule.id
+                    ),
+                })
+                .collect();
+            passed &= Self::report(&untested) == Outcome::Passed;
+            hosted.extend(rules.into_iter().map(|rule| rule.id));
+        }
+        passed &= self.conclude(hits, &hosted)?;
+        Ok(if passed {
+            Outcome::Passed
+        } else {
+            Outcome::Failed
+        })
+    }
+
+    /// Runs the dylint libraries over every workspace and fails on each finding of one of their
+    /// lints the record does not cover, at whatever level it was reported, and on every compile
+    /// error. With `force_warn`, each lint is forced to warn so that no level in the code can
+    /// silence it.
+    fn dylint(&self) -> Result<Outcome, Error> {
+        let ctx = &self.ctx;
+        let lints: Vec<String> = (self.dylint_lister)(&ctx.root)?
+            .into_iter()
+            .map(|lint| lint.name)
+            .collect();
+        let forced: Vec<String> = lints.iter().map(|l| format!("--force-warn={l}")).collect();
+        let mut hits = Vec::new();
+        let mut errors = 0usize;
+        let mut build_failed = false;
+        for mut cmd in plan(Tool::Dylint, ctx) {
+            if ctx.config.dylint.force_warn {
+                cmd.env
+                    .push(("DYLINT_RUSTFLAGS".to_owned(), forced.join(" ")));
+            }
+            let output = self.output(&cmd)?;
+            build_failed |= !output.status.success();
+            let prefix = cmd.dir.clone().unwrap_or_default();
+            for diagnostic in dedupe(parse_cargo_messages(&String::from_utf8_lossy(
+                &output.stdout,
+            ))) {
+                let diagnostic = diagnostic.under(&ctx.root, &prefix);
+                if !ctx.scope.is_empty() && !in_scope(&diagnostic, &ctx.root, &ctx.scope) {
+                    continue;
+                }
+                let lint = diagnostic
+                    .code
+                    .as_deref()
+                    .filter(|code| lints.iter().any(|l| lint_key(l) == lint_key(code)));
+                match lint {
+                    Some(code) => hits.push(lint_hit(&diagnostic, code)),
+                    None if diagnostic.is_error() => {
+                        print!("{}", diagnostic.rendered);
+                        if let Some(code) = &diagnostic.code {
+                            println!("  = doc: rust-qa rule-doc {code}");
+                        }
+                        errors += 1;
+                    }
+                    None => {}
+                }
+            }
+        }
+        let mut passed = self.conclude(hits, &lints)? && errors == 0;
+        if passed && build_failed {
+            println!(
+                "error: the build failed, so code after the failure was not checked; a recorded finding at deny level still stops the build: set [dylint] force_warn = true"
+            );
+            passed = false;
         }
         Ok(if passed {
             Outcome::Passed
@@ -682,17 +1084,13 @@ impl RealExecutor {
         let mut blocking = 0usize;
         let mut build_failed = false;
         for cmd in plan(tool, ctx) {
-            println!("$ {}", cmd.display());
-            let output = cmd
-                .command()
-                .current_dir(&ctx.root)
-                .stderr(Stdio::inherit())
-                .output()
-                .map_err(|e| missing_tool(&cmd, &e))?;
+            let output = self.output(&cmd)?;
             build_failed |= !output.status.success();
+            let prefix = cmd.dir.clone().unwrap_or_default();
             for diagnostic in dedupe(parse_cargo_messages(&String::from_utf8_lossy(
                 &output.stdout,
             ))) {
+                let diagnostic = diagnostic.under(&ctx.root, &prefix);
                 if !in_scope(&diagnostic, &ctx.root, &ctx.scope) {
                     continue;
                 }
@@ -715,6 +1113,74 @@ impl RealExecutor {
             return Ok(Outcome::Failed);
         }
         Ok(Outcome::Passed)
+    }
+
+    /// Runs a project stage: by its exit code, or by the findings it prints, with the record
+    /// applied.
+    fn stage(&self, stage: &Stage) -> Result<Outcome, Error> {
+        let ctx = &self.ctx;
+        let scoped = !ctx.scope.is_empty();
+        let files = if stage.takes_files(scoped) {
+            stage.matching_files(&ctx.root, &ctx.scope)?
+        } else {
+            Vec::new()
+        };
+        let Some(argv) = stage.argv(scoped, &files) else {
+            return Ok(Outcome::Skipped("no files for this stage".to_owned()));
+        };
+        let Some((program, rest)) = argv.split_first() else {
+            return Err(Error::Usage(format!(
+                "stage `{}` has an empty command",
+                stage.name
+            )));
+        };
+        let cmd = Cmd {
+            program: program.clone(),
+            args: rest.to_vec(),
+            dir: stage.dir.clone(),
+            own_toolchain: stage.dir.is_some(),
+            env: Vec::new(),
+        };
+        if stage.output == Output::Status {
+            return Ok(if self.status(&cmd)? {
+                Outcome::Passed
+            } else {
+                Outcome::Failed
+            });
+        }
+        let output = self.output(&cmd)?;
+        if !matches!(output.status.code(), Some(0 | 1)) {
+            println!(
+                "error: stage `{}` did not complete ({})",
+                stage.name, output.status
+            );
+            return Ok(Outcome::Failed);
+        }
+        let mut hits = crate::stage::parse_findings(
+            &String::from_utf8_lossy(&output.stdout),
+            stage.dir.as_deref(),
+        )
+        .map_err(|message| {
+            command_error(&cmd.display(), &format!("printed no findings: {message}"))
+        })?;
+        for found in &mut hits {
+            if let Ok(relative) = found.path.strip_prefix(&ctx.root) {
+                found.path = relative.to_path_buf();
+            }
+        }
+        hits.retain(|found| scoped_in(&found.path, &ctx.scope));
+        let hosted: Vec<String> = match &stage.rules {
+            Some(_) => crate::defences::stage_rules(&ctx.root, stage)?
+                .into_iter()
+                .map(|rule| rule.id)
+                .collect(),
+            None => Vec::new(),
+        };
+        Ok(if self.conclude(hits, &hosted)? {
+            Outcome::Passed
+        } else {
+            Outcome::Failed
+        })
     }
 
     fn clean_tree(&self) -> Result<Outcome, Error> {
@@ -770,6 +1236,64 @@ impl RealExecutor {
     }
 }
 
+fn scoped_in(path: &Path, scope: &[PathBuf]) -> bool {
+    scope.is_empty() || scope.iter().any(|wanted| path.starts_with(wanted))
+}
+
+fn lint_hit(diagnostic: &Diagnostic, code: &str) -> Hit {
+    let mut rendered = diagnostic.rendered.trim_end().to_owned();
+    if !diagnostic.is_error() {
+        rendered.push_str(
+            "\n  = gate: blocking; a dylint finding fails the gate unless the project record covers it",
+        );
+    }
+    Hit {
+        rule: code.to_owned(),
+        path: diagnostic.files.first().cloned().unwrap_or_default(),
+        line: diagnostic.line,
+        column: diagnostic.column,
+        message: diagnostic.message.clone(),
+        note: None,
+        rendered: Some(rendered),
+        blocking: true,
+    }
+}
+
+/// `rqaci.record.invalid` for each `covers = "findings"` exception whose rule no detector that
+/// applies the record reports: findings exceptions apply to dylint lints, ast-grep rules and the
+/// rules of project stages, never to rustc or Clippy, whose route is a recorded `expect`.
+#[must_use]
+pub fn findings_exceptions_unhosted(
+    record: &Record,
+    defences: &[crate::defences::Defence],
+    record_path: &Path,
+) -> Vec<Finding> {
+    record
+        .exceptions
+        .iter()
+        .enumerate()
+        .filter(|(_, exception)| exception.covers == Covers::Findings)
+        .filter(|(_, exception)| {
+            !defences.iter().any(|defence| {
+                matches!(
+                    defence.engine,
+                    Engine::Dylint | Engine::AstGrep | Engine::Stage
+                ) && same_rule(&defence.id, &exception.rule)
+            })
+        })
+        .map(|(index, exception)| Finding {
+            rule: builtin::RECORD_INVALID,
+            path: record_path.to_path_buf(),
+            line: 0,
+            message: format!(
+                "exception #{} covers findings of `{}`, which no dylint lint, ast-grep rule or project stage reports; an exception for rustc or Clippy is a recorded `expect` in the source",
+                index + 1,
+                exception.rule
+            ),
+        })
+        .collect()
+}
+
 fn missing_tool(cmd: &Cmd, error: &std::io::Error) -> Error {
     let hint = if error.kind() == std::io::ErrorKind::NotFound {
         "; install the pinned tools with rust-qa-ci's scripts/install-tools.sh"
@@ -786,9 +1310,16 @@ fn missing_tool(cmd: &Cmd, error: &std::io::Error) -> Error {
 pub fn render_summary(
     root: &Path,
     config: &Config,
-    dylint_lister: fn(&Path) -> Result<Vec<DylintLint>, Error>,
+    dylint_lister: DylintLister,
 ) -> Result<String, Error> {
-    let defences = enumerate(root, config, &dylint_lister)?;
+    let mut defences = enumerate(root, config, &dylint_lister)?;
+    let resolver = crate::docs::Resolver::new(root, &config.docs_dir);
+    for defence in defences.iter_mut().filter(|d| d.summarised) {
+        if let Some(page) = resolver.project_page(&defence.id)? {
+            defence.fix = crate::docs::section_paragraph(&page, &config.summary.fix_headings)
+                .unwrap_or_default();
+        }
+    }
     let record = Record::load(&root.join(&config.record.path))?;
     Ok(summary::render(&defences, &record, &config.record))
 }

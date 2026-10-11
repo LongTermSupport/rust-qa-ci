@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::defences::Defence;
 use crate::policy::{RecordPolicy, Status};
-use crate::record::Record;
+use crate::record::{Covers, Record};
 
 /// Opening marker of the generated region.
 pub const BEGIN: &str =
@@ -22,10 +22,18 @@ pub fn render(defences: &[Defence], record: &Record, policy: &RecordPolicy) -> S
         "\n\nActive defences. Failures print these ids unaltered; resolve any id offline with ",
     );
     out.push_str("`rust-qa rule-doc <id>`. Exceptions only via the project record, with a justification.\n\n");
-    for defence in defences {
+    for defence in defences.iter().filter(|d| d.summarised) {
+        let mut said = if defence.description.is_empty() {
+            String::new()
+        } else {
+            format!(" {}.", defence.description.trim_end_matches('.'))
+        };
+        if !defence.fix.is_empty() {
+            let _ = write!(said, " Fix: {}", defence.fix);
+        }
         let _ = writeln!(
             out,
-            "- `{}` ({}, {}): `rust-qa rule-doc {}`",
+            "- `{}` ({}, {}):{said} `rust-qa rule-doc {}`",
             defence.id,
             defence.engine.name(),
             defence.level,
@@ -45,9 +53,13 @@ pub fn render(defences: &[Defence], record: &Record, policy: &RecordPolicy) -> S
             |date| format!("review by {date}"),
         );
         let model = exception.added_by_model.as_deref().unwrap_or("unknown");
+        let covers = match exception.covers {
+            Covers::Suppressions => String::new(),
+            Covers::Findings => ", covers findings".to_owned(),
+        };
         let _ = writeln!(
             out,
-            "- `{}` at `{}` ({review_by}, added by {model})",
+            "- `{}` at `{}` ({review_by}, added by {model}{covers})",
             exception.rule, exception.path
         );
     }

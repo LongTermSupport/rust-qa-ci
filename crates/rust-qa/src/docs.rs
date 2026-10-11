@@ -1,13 +1,18 @@
 //! Offline identifier-to-documentation resolution.
 //!
-//! Order: project document (`<docs_dir>/<id>.md`), bundled document, the installed Clippy
-//! (`cargo clippy --explain`), then the installed rustc (lint listing in the `rust-docs` component,
-//! else the one-line description from `rustc -W help`). Nothing is fetched from the network.
+//! Order: project document (`<docs_dir>/<id>.md`, else a page whose name is the identifier as a
+//! lint name, without case and with `-` for `_`), a project stage's own description, bundled
+//! document, the installed Clippy (`cargo clippy --explain`), then the installed rustc (lint listing
+//! in the `rust-docs` component, else the one-line description from `rustc -W help`). Nothing is
+//! fetched from the network.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::Error;
+use crate::config::DocResolver;
+use crate::record::lint_key;
+use crate::stage::Stage;
 
 /// Bundled rule documents: (identifier, markdown). Every file under `docs/rules/` must be listed
 /// (enforced by a test), and each file's first line is `# <identifier>`.
@@ -41,6 +46,14 @@ static BUNDLED: &[(&str, &str)] = &[
     (
         "rqaci.docs.dangling",
         include_str!("../docs/rules/rqaci.docs.dangling.md"),
+    ),
+    (
+        "rqaci.docs.orphan",
+        include_str!("../docs/rules/rqaci.docs.orphan.md"),
+    ),
+    (
+        "rqaci.rules.untested",
+        include_str!("../docs/rules/rqaci.rules.untested.md"),
     ),
     (
         "rqaci.record.budget",
@@ -110,7 +123,7 @@ pub fn dangling(
     config: &crate::config::Config,
     dylint: &dyn Fn(&Path) -> Result<Vec<crate::defences::DylintLint>, Error>,
 ) -> Result<(Vec<String>, Vec<String>), Error> {
-    let resolver = Resolver::new(root, &config.docs_dir);
+    let resolver = Resolver::for_config(root, config);
     let mut ids: Vec<String> = crate::defences::enumerate(root, config, dylint)?
         .into_iter()
         .map(|d| d.id)
@@ -147,6 +160,77 @@ pub fn doc_file_name(id: &str) -> String {
     format!("{}.md", id.replace("::", "."))
 }
 
+/// The first paragraph of the `## <heading>` section of a markdown page, for the first of
+/// `headings` the page has, on one line.
+#[must_use]
+pub fn section_paragraph(text: &str, headings: &[String]) -> Option<String> {
+    for heading in headings {
+        let marker = format!("## {heading}");
+        let mut lines = text.lines().skip_while(|line| line.trim_end() != marker);
+        if lines.next().is_none() {
+            continue;
+        }
+        let paragraph: Vec<&str> = lines
+            .skip_while(|line| line.trim().is_empty())
+            .take_while(|line| !line.trim().is_empty() && !line.starts_with('#'))
+            .map(str::trim)
+            .collect();
+        if !paragraph.is_empty() {
+            let text = paragraph.join(" ");
+            // A paragraph that introduces an example ends where the example would begin; a last
+            // sentence that only introduces it says nothing without it, so it is dropped.
+            return Some(match text.strip_suffix(':') {
+                Some(lead) => match lead.rfind(". ") {
+                    Some(end) => lead[..=end].to_owned(),
+                    None => format!("{lead}."),
+                },
+                None => text,
+            });
+        }
+    }
+    None
+}
+
+/// Whether the page named `stem` (its file name without `.md`) documents `id`.
+fn documents(stem: &str, id: &str) -> bool {
+    let named = id.replace("::", ".");
+    stem == named || lint_key(stem) == lint_key(&named)
+}
+
+/// Pages in `docs_dir` (relative to `root`) that document none of `ids`, relative to the root and
+/// sorted. `README.md` is never an orphan; a missing directory holds none.
+///
+/// # Errors
+/// Returns an error when the directory exists but cannot be read.
+pub fn orphans(root: &Path, docs_dir: &Path, ids: &[String]) -> Result<Vec<PathBuf>, Error> {
+    let dir = root.join(docs_dir);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(Error::Read { path: dir, source }),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|source| Error::Read {
+                path: dir.clone(),
+                source,
+            })?
+            .path();
+        if path.extension().is_none_or(|e| e != "md") || !path.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if stem != "README" && !ids.iter().any(|id| documents(&stem, id)) {
+            found.push(docs_dir.join(format!("{stem}.md")));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
 /// Where a document came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -160,6 +244,10 @@ pub enum Source {
     RustcBook(PathBuf),
     /// One-line description from `rustc -W help`.
     RustcHelp,
+    /// A project stage's own `says` and `fix`, or the documentation its `rules` command gives.
+    Stage,
+    /// A `[[resolver]]` text from the configuration.
+    Configured,
 }
 
 /// A resolved document.
@@ -176,6 +264,10 @@ pub struct Doc {
 pub struct Resolver {
     root: PathBuf,
     docs_dir: PathBuf,
+    stages: Vec<Stage>,
+    resolvers: Vec<DocResolver>,
+    /// The rules every stage's `rules` command printed, read once.
+    stage_rules: std::cell::OnceCell<Vec<crate::stage::StageRule>>,
 }
 
 impl Resolver {
@@ -185,7 +277,56 @@ impl Resolver {
         Self {
             root: root.to_path_buf(),
             docs_dir: docs_dir.to_path_buf(),
+            stages: Vec::new(),
+            resolvers: Vec::new(),
+            stage_rules: std::cell::OnceCell::new(),
         }
+    }
+
+    /// Resolver for the workspace at `root` as `config` describes it, its project stages included.
+    #[must_use]
+    pub fn for_config(root: &Path, config: &crate::config::Config) -> Self {
+        Self {
+            stages: config.stages.clone(),
+            resolvers: config.resolvers.clone(),
+            ..Self::new(root, &config.docs_dir)
+        }
+    }
+
+    /// The project page for `id`, under its own name or another spelling of it, if one exists.
+    ///
+    /// # Errors
+    /// Returns an error when the page exists but cannot be read.
+    pub fn project_page(&self, id: &str) -> Result<Option<String>, Error> {
+        let id = id.trim();
+        let id = id.strip_prefix(AST_GREP_PREFIX).unwrap_or(id);
+        let exact = self.docs_dir.join(doc_file_name(id));
+        let page = if self.root.join(&exact).is_file() {
+            Some(exact)
+        } else {
+            self.project_alias(id)
+        };
+        page.map(|page| crate::read_to_string(&self.root.join(page)))
+            .transpose()
+    }
+
+    /// The project page documenting `id` under another spelling of its name, if one exists.
+    fn project_alias(&self, id: &str) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(self.root.join(&self.docs_dir)).ok()?;
+        let mut pages: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "md") && path.is_file())
+            .filter(|path| {
+                path.file_stem()
+                    .is_some_and(|stem| documents(&stem.to_string_lossy(), id))
+            })
+            .collect();
+        pages.sort();
+        pages
+            .into_iter()
+            .next()
+            .and_then(|path| path.file_name().map(|name| self.docs_dir.join(name)))
     }
 
     /// Resolves `id`; `Ok(None)` means the identifier is dangling.
@@ -205,6 +346,24 @@ impl Resolver {
                 text: crate::read_to_string(&absolute)?,
             }));
         }
+        if let Some(alias) = self.project_alias(id) {
+            return Ok(Some(Doc {
+                text: crate::read_to_string(&self.root.join(&alias))?,
+                source: Source::Project(alias),
+            }));
+        }
+        if let Some(stage) = self.stages.iter().find(|stage| stage.name == id) {
+            return Ok(Some(Doc {
+                source: Source::Stage,
+                text: stage.doc(),
+            }));
+        }
+        if let Some(text) = self.stage_rule_doc(id)? {
+            return Ok(Some(Doc {
+                source: Source::Stage,
+                text,
+            }));
+        }
         if let Some(text) = bundled(id) {
             return Ok(Some(Doc {
                 source: Source::Bundled,
@@ -214,10 +373,42 @@ impl Resolver {
         if let Some(name) = id.strip_prefix("clippy::") {
             return Ok(self.clippy_explain(name));
         }
-        if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Ok(self.rustc_lint(id));
+        if !id.is_empty()
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && let Some(doc) = self.rustc_lint(id)
+        {
+            return Ok(Some(doc));
         }
-        Ok(None)
+        Ok(self.configured(id))
+    }
+
+    /// The documentation a stage's `rules` command gives for one of its rules.
+    fn stage_rule_doc(&self, id: &str) -> Result<Option<String>, Error> {
+        if self.stage_rules.get().is_none() {
+            let mut all = Vec::new();
+            for stage in self.stages.iter().filter(|stage| stage.rules.is_some()) {
+                all.extend(crate::defences::stage_rules(&self.root, stage)?);
+            }
+            let _ = self.stage_rules.set(all);
+        }
+        Ok(self
+            .stage_rules
+            .get()
+            .and_then(|rules| rules.iter().find(|rule| rule.id == id))
+            .and_then(|rule| rule.doc.clone()))
+    }
+
+    /// The text of the first configured resolver whose glob matches `id`.
+    fn configured(&self, id: &str) -> Option<Doc> {
+        self.resolvers.iter().find_map(|resolver| {
+            let glob = globset::Glob::new(&resolver.matches)
+                .ok()?
+                .compile_matcher();
+            glob.is_match(id).then(|| Doc {
+                source: Source::Configured,
+                text: resolver.text.replace("{id}", id),
+            })
+        })
     }
 
     fn command(&self, program: &str) -> Command {

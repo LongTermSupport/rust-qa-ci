@@ -148,6 +148,29 @@ pub fn has_dylint_metadata(root: &Path) -> Result<bool, Error> {
         .is_some())
 }
 
+/// The library entries of the root manifest's `[workspace.metadata.dylint] libraries`, each a
+/// table such as `{ path = "lints" }` or `{ git = "...", rev = "...", pattern = "..." }`.
+///
+/// # Errors
+/// Returns an error when the root manifest cannot be read or parsed.
+pub fn dylint_libraries(root: &Path) -> Result<Vec<toml::Table>, Error> {
+    let value: Value = crate::read_toml(&root.join("Cargo.toml"))?;
+    Ok(value
+        .get("workspace")
+        .and_then(|w| w.get("metadata"))
+        .and_then(|m| m.get("dylint"))
+        .and_then(|d| d.get("libraries"))
+        .and_then(Value::as_array)
+        .map(|libraries| {
+            libraries
+                .iter()
+                .filter_map(Value::as_table)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// Files under `root` (relative paths, sorted) accepted by `keep`. Honours `.gitignore` files (so
 /// scratch clones and build output are skipped), always skips `target` and `.git` directories, keeps
 /// hidden configuration directories such as `.cargo`, and drops anything matching `exclude`. A
