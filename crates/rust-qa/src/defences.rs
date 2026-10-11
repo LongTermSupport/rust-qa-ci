@@ -91,6 +91,8 @@ pub struct AstGrepRule {
     pub severity: String,
     /// Rule file relative to the root.
     pub file: PathBuf,
+    /// The language the rule reads, as the rule spells it.
+    pub language: String,
     /// The rule's message.
     pub message: String,
 }
@@ -483,6 +485,10 @@ pub fn ast_grep_rules(root: &Path) -> Result<Vec<AstGrepRule>, Error> {
                             .unwrap_or("hint")
                             .to_owned(),
                         file: file.clone(),
+                        language: field(&doc, "language")
+                            .and_then(Yaml::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
                         message: field(&doc, "message")
                             .and_then(Yaml::as_str)
                             .unwrap_or("")
@@ -494,6 +500,36 @@ pub fn ast_grep_rules(root: &Path) -> Result<Vec<AstGrepRule>, Error> {
         }
     }
     Ok(rules)
+}
+
+/// The file-name globs `languageGlobs` in `sgconfig.yml` adds to each language, as spelled there.
+///
+/// # Errors
+/// Returns an error when `sgconfig.yml` cannot be read or parsed.
+pub fn language_globs(root: &Path) -> Result<Vec<(String, Vec<String>)>, Error> {
+    let docs = load_yaml(&root.join("sgconfig.yml"))?;
+    Ok(docs
+        .first()
+        .and_then(|doc| field(doc, "languageGlobs"))
+        .and_then(Yaml::as_hash)
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(language, globs)| {
+                    let globs = match globs {
+                        Yaml::Array(items) => items
+                            .iter()
+                            .filter_map(Yaml::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect(),
+                        Yaml::String(one) => vec![one.clone()],
+                        _ => Vec::new(),
+                    };
+                    language.as_str().map(|name| (name.to_owned(), globs))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 pub(crate) fn field<'a>(doc: &'a Yaml, key: &str) -> Option<&'a Yaml> {

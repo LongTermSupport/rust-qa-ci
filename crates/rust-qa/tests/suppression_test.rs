@@ -371,3 +371,146 @@ fn a_findings_exception_licenses_no_suppression_and_is_never_stale_here() {
     assert_eq!(findings[0].rule, SUPPRESSION_UNRECORDED);
     assert_eq!(stale(&result, &rec), Vec::<usize>::new());
 }
+
+#[test]
+fn a_hand_written_automatically_derived_attribute_is_a_suppression() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/main.rs",
+        "#[derive(Copy)]\nstruct A(u8);\n\n#[automatically_derived]\nimpl Clone for A {\n    fn clone(&self) -> Self { A(self.0) }\n}\n\
+         macro_rules! m { () => { #[automatically_derived] impl Default for A { fn default() -> Self { A(0) } } }; }\n",
+    );
+    let result = scan(dir.path(), &[], &no_exclude()).unwrap();
+    assert_eq!(
+        found(&result.suppressions),
+        vec![
+            (
+                "automatically_derived".to_owned(),
+                "src/main.rs".to_owned(),
+                4,
+                Route::AutomaticallyDerived
+            ),
+            (
+                "automatically_derived".to_owned(),
+                "src/main.rs".to_owned(),
+                8,
+                Route::AutomaticallyDerived
+            ),
+        ]
+    );
+}
+
+#[test]
+fn lint_attributes_in_a_file_brought_in_by_include_are_suppressions_whatever_its_name() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "src/main.rs",
+        "include!(\"helper.inc\");\nfn main() {}\n",
+    );
+    write(
+        dir.path(),
+        "src/helper.inc",
+        "\n#[LINTOFF(clippy::len_zero)]\nfn is_none(v: &[u8]) -> bool { v.len() == 0 } // ast-grep-ignore: r\n",
+    );
+    let result = scan(dir.path(), &[], &no_exclude()).unwrap();
+    assert_eq!(
+        found(&result.suppressions),
+        vec![
+            (
+                "clippy::len_zero".to_owned(),
+                "src/helper.inc".to_owned(),
+                2,
+                Route::AllowAttribute
+            ),
+            (
+                "ast-grep::r".to_owned(),
+                "src/helper.inc".to_owned(),
+                3,
+                Route::AstGrepIgnore
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_included_file_that_does_not_parse_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "src/main.rs", "include!(\"gen.inc\");\n");
+    write(dir.path(), "src/gen.inc", "fn (\n");
+    let result = scan(dir.path(), &[], &no_exclude()).unwrap();
+    assert_eq!(result.unparseable.len(), 1, "{:?}", result.unparseable);
+    assert_eq!(result.unparseable[0].0, PathBuf::from("src/gen.inc"));
+}
+
+const SG_JS: &str = "ruleDirs: [rules]\nlanguageGlobs:\n  bash: [runme]\n";
+
+fn ast_grep_project(root: &Path) {
+    write(root, "sgconfig.yml", SG_JS);
+    write(
+        root,
+        "rules/no-eval.yml",
+        "id: proj.no-eval\nlanguage: JavaScript\nseverity: error\nmessage: no\nrule:\n  pattern: eval($A)\n",
+    );
+    write(
+        root,
+        "rules/no-echo.yml",
+        "id: proj.no-echo\nlanguage: bash\nseverity: error\nmessage: no\nrule:\n  pattern: echo $A\n",
+    );
+}
+
+#[test]
+fn ast_grep_ignores_in_the_languages_of_project_rules_are_suppressions() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    ast_grep_project(root);
+    write(
+        root,
+        "web/a.js",
+        "function f(a) {\n  // ast-grep-ignore: proj.no-eval\n  eval(a);\n  eval(a); /* ast-grep-ignore */\n  const s = \"`// ast-grep-ignore\";\n  // explains ast-grep-ignore usage\n}\n",
+    );
+    write(
+        root,
+        "runme",
+        "#!/bin/bash\n# ast-grep-ignore: proj.no-echo\necho hi\n",
+    );
+    write(root, "tool.sh", "echo hi # ast-grep-ignore\n");
+    // Not a language any project rule reads.
+    write(root, "notes.py", "# ast-grep-ignore\n");
+    write(
+        root,
+        "README.md",
+        "Silence one with `// ast-grep-ignore: <id>`.\n",
+    );
+    let result = scan(root, &[], &no_exclude()).unwrap();
+    assert_eq!(
+        found(&result.suppressions),
+        vec![
+            (
+                "ast-grep::proj.no-echo".to_owned(),
+                "runme".to_owned(),
+                2,
+                Route::AstGrepIgnore
+            ),
+            (
+                "ast-grep::*".to_owned(),
+                "tool.sh".to_owned(),
+                1,
+                Route::AstGrepIgnore
+            ),
+            (
+                "ast-grep::proj.no-eval".to_owned(),
+                "web/a.js".to_owned(),
+                2,
+                Route::AstGrepIgnore
+            ),
+            (
+                "ast-grep::*".to_owned(),
+                "web/a.js".to_owned(),
+                4,
+                Route::AstGrepIgnore
+            ),
+        ]
+    );
+}

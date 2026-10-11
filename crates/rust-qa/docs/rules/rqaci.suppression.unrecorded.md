@@ -5,8 +5,11 @@
 A route that silences a defence without a matching exception in the project record:
 
 - `#[allow(...)]` or `#[expect(...)]` lint attributes, including inside `#[cfg_attr(...)]` and inside
-  macro bodies;
-- `// ast-grep-ignore` comments (bare or with rule ids);
+  macro bodies, and in a file brought in with `include!("...")` whatever its name;
+- a hand-written `#[automatically_derived]` (rule `automatically_derived`): Clippy skips several
+  lints on such an impl, and rustc allows `single_use_lifetimes` beneath it;
+- `ast-grep-ignore` comments (bare or with rule ids), in Rust and in every file ast-grep reads as a
+  language a project ast-grep rule targets (by its extensions and `languageGlobs`);
 - `allow` levels in Cargo `[lints]` or `[workspace.lints]` tables;
 - `-A`, `--allow` or `--cap-lints` in `.cargo/config.toml` rustflags;
 - `allow-*` switches set to `true` in `clippy.toml`;
@@ -21,8 +24,10 @@ reason in one discoverable place, otherwise defences erode silently one line at 
 ## How to fix correctly
 
 1. Prefer fixing the code so the defence passes; that removes the need for any exception.
+
 2. If the rule is genuinely wrong at this site, keep the narrowest suppression (one item, one lint),
    written as `#[expect(lint, reason = "...")]` so it fails once it stops being needed.
+
 3. Add an exception to the project record (`qa/record.toml` by default):
 
    ```toml

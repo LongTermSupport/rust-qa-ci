@@ -1,10 +1,11 @@
 //! Suppression guard (`rqaci.suppression.unrecorded`).
 //!
 //! Finds every route that silences a defence and requires a matching project-record exception:
-//! lint attributes (`allow`, `expect`, including inside `cfg_attr` and macro bodies), ast-grep ignore
-//! comments, `allow` levels in Cargo `[lints]` tables, `-A`/`--allow`/`--cap-lints` in
-//! `.cargo/config.toml` rustflags, `allow-*` switches in `clippy.toml`, and cargo-deny advisory
-//! ignores. Attributes are matched on the parsed syntax tree because they are syntax by definition;
+//! lint attributes (`allow`, `expect`, including inside `cfg_attr` and macro bodies, and in files
+//! brought in with `include!` whatever their name), a hand-written `#[automatically_derived]`,
+//! ast-grep ignore comments in Rust and in every language a project ast-grep rule reads, `allow`
+//! levels in Cargo `[lints]` tables, `-A`/`--allow`/`--cap-lints` in `.cargo/config.toml`
+//! rustflags, `allow-*` switches in `clippy.toml`, and cargo-deny advisory ignores. Attributes are matched on the parsed syntax tree because they are syntax by definition;
 //! no type information can add or remove a suppression.
 
 use std::path::{Path, PathBuf};
@@ -32,6 +33,9 @@ pub enum Route {
     AllowAttribute,
     /// Lint attribute written inside a macro invocation or definition.
     MacroAttribute,
+    /// `#[automatically_derived]` written by hand: Clippy skips several lints beneath it, and rustc
+    /// allows `single_use_lifetimes` there.
+    AutomaticallyDerived,
     /// `// ast-grep-ignore` comment.
     AstGrepIgnore,
     /// `allow` level in a Cargo `[lints]` table.
@@ -52,6 +56,7 @@ impl Route {
             Self::Attribute => "lint attribute",
             Self::AllowAttribute => "allow attribute",
             Self::MacroAttribute => "lint attribute in a macro",
+            Self::AutomaticallyDerived => "hand-written automatically_derived attribute",
             Self::AstGrepIgnore => "ast-grep ignore comment",
             Self::ManifestLints => "Cargo [lints] allow level",
             Self::Rustflags => "rustflags lint override",
@@ -88,9 +93,12 @@ pub struct ScanResult {
 /// # Errors
 /// Returns an error when a configuration file cannot be read or parsed.
 pub fn scan(root: &Path, scope: &[PathBuf], exclude: &GlobSet) -> Result<ScanResult, Error> {
-    let files = workspace_files(root, scope, exclude, is_scanned);
+    let mut files = workspace_files(root, scope, exclude, is_scanned);
+    let listed = files.len();
     let mut result = ScanResult::default();
-    for rel in files {
+    let mut index = 0;
+    while let Some(rel) = files.get(index).cloned() {
+        index += 1;
         let text = read_to_string(&root.join(&rel))?;
         let mut found: Vec<(String, usize, Route)> = Vec::new();
         let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -107,14 +115,28 @@ pub fn scan(root: &Path, scope: &[PathBuf], exclude: &GlobSet) -> Result<ScanRes
         } else if is_cargo_config(&rel) {
             rustflags(&text, &rel, &mut found)?;
         } else {
+            let mut included = Vec::new();
+            let mut visitor = AttrVisitor {
+                out: &mut found,
+                included: &mut included,
+            };
             match syn::parse_file(&text) {
-                Ok(file) => {
-                    let mut visitor = AttrVisitor { out: &mut found };
-                    visitor.visit_file(&file);
-                }
-                Err(error) => result.unparseable.push((rel.clone(), error.to_string())),
+                Ok(file) => visitor.visit_file(&file),
+                // An included file may hold an expression rather than items.
+                Err(error) => match syn::parse_str::<syn::Expr>(&text) {
+                    Ok(expr) if index > listed => visitor.visit_expr(&expr),
+                    _ => result.unparseable.push((rel.clone(), error.to_string())),
+                },
             }
             ast_grep_ignores(&text, &mut found);
+            // An included file is Rust whatever its name, and is read relative to the includer.
+            let dir = rel.parent().unwrap_or_else(|| Path::new(""));
+            for target in included {
+                let target = normalise(&dir.join(target));
+                if !files.contains(&target) && root.join(&target).is_file() {
+                    files.push(target);
+                }
+            }
         }
         found.sort_by_key(|(_, line, _)| *line);
         result
@@ -126,7 +148,26 @@ pub fn scan(root: &Path, scope: &[PathBuf], exclude: &GlobSet) -> Result<ScanRes
                 route,
             }));
     }
+    other_language_ignores(root, scope, exclude, &mut result.suppressions)?;
+    result
+        .suppressions
+        .sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
     Ok(result)
+}
+
+/// `path` with `.` and `..` components resolved lexically.
+fn normalise(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Turns a scan into findings: unrecorded suppressions, unparseable files, and (on full scans)
@@ -246,10 +287,19 @@ fn is_cargo_config(rel: &Path) -> bool {
 
 struct AttrVisitor<'a> {
     out: &'a mut Vec<(String, usize, Route)>,
+    /// Paths named by `include!`, relative to the including file's directory.
+    included: &'a mut Vec<PathBuf>,
 }
 
 impl<'ast> Visit<'ast> for AttrVisitor<'_> {
     fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+        if attr.path().is_ident(AUTOMATICALLY_DERIVED) {
+            self.out.push((
+                AUTOMATICALLY_DERIVED.to_owned(),
+                attr.span().start().line,
+                Route::AutomaticallyDerived,
+            ));
+        }
         collect_meta(
             &attr.meta,
             attr.span().start().line,
@@ -260,12 +310,31 @@ impl<'ast> Visit<'ast> for AttrVisitor<'_> {
     }
 
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if mac.path.is_ident("include")
+            && let Ok(target) = syn::parse2::<syn::LitStr>(mac.tokens.clone())
+        {
+            self.included.push(PathBuf::from(target.value()));
+        }
         scan_tokens(mac.tokens.clone(), self.out);
         syn::visit::visit_macro(self, mac);
     }
 }
 
+/// The attribute under which Clippy and rustc treat code as generated.
+const AUTOMATICALLY_DERIVED: &str = "automatically_derived";
+
 fn collect_meta(meta: &Meta, line: usize, route: Route, out: &mut Vec<(String, usize, Route)>) {
+    if let Meta::Path(path) = meta
+        && path.is_ident(AUTOMATICALLY_DERIVED)
+        && route == Route::MacroAttribute
+    {
+        out.push((
+            AUTOMATICALLY_DERIVED.to_owned(),
+            line,
+            Route::AutomaticallyDerived,
+        ));
+        return;
+    }
     let Meta::List(list) = meta else {
         return;
     };
@@ -342,25 +411,197 @@ fn ast_grep_ignores(text: &str, out: &mut Vec<(String, usize, Route)>) {
         let Some(rest) = body.strip_prefix(MARKER) else {
             continue;
         };
-        let rest = rest.trim_end_matches("*/");
-        let ids: Vec<&str> = rest
-            .trim_start()
-            .strip_prefix(':')
-            .map(|list| {
-                list.split(',')
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                    .collect()
-            })
+        push_ignore(rest.trim_end_matches("*/"), line, out);
+    }
+}
+
+/// The ignore a directive's text after `ast-grep-ignore` names: the listed rules, or every rule.
+fn push_ignore(rest: &str, line: usize, out: &mut Vec<(String, usize, Route)>) {
+    let ids: Vec<&str> = rest
+        .trim_start()
+        .strip_prefix(':')
+        .map(|list| {
+            list.split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        out.push(("ast-grep::*".to_owned(), line, Route::AstGrepIgnore));
+    }
+    for id in ids {
+        let id = id.split_whitespace().next().unwrap_or(id);
+        out.push((format!("ast-grep::{id}"), line, Route::AstGrepIgnore));
+    }
+}
+
+/// The file extensions ast-grep reads as each language other than Rust, and the markers that open
+/// a comment there.
+const LANGUAGES: &[(&str, &[&str], &[&str])] = &[
+    (
+        "bash",
+        &[
+            "bash", "bats", "cgi", "command", "env", "fcgi", "ksh", "sh", "tmux", "tool", "zsh",
+        ],
+        &["#"],
+    ),
+    ("c", &["c", "h"], &["//", "/*"]),
+    (
+        "cpp",
+        &["cc", "hpp", "cpp", "c++", "hh", "cxx", "cu", "ino"],
+        &["//", "/*"],
+    ),
+    ("csharp", &["cs"], &["//", "/*"]),
+    ("css", &["css", "scss"], &["/*"]),
+    ("elixir", &["ex", "exs"], &["#"]),
+    ("go", &["go"], &["//", "/*"]),
+    ("haskell", &["hs"], &["--", "{-"]),
+    (
+        "hcl",
+        &["hcl", "nomad", "tf", "tfvars", "workflow"],
+        &["#", "//", "/*"],
+    ),
+    ("html", &["html", "htm", "xhtml"], &["<!--"]),
+    ("java", &["java"], &["//", "/*"]),
+    ("javascript", &["cjs", "js", "mjs", "jsx"], &["//", "/*"]),
+    ("kotlin", &["kt", "ktm", "kts"], &["//", "/*"]),
+    ("lua", &["lua"], &["--"]),
+    ("nix", &["nix"], &["#", "/*"]),
+    ("php", &["php"], &["//", "#", "/*"]),
+    ("python", &["py", "py3", "pyi", "bzl"], &["#"]),
+    ("ruby", &["rb", "rbw", "gemspec"], &["#"]),
+    ("scala", &["scala", "sc", "sbt"], &["//", "/*"]),
+    ("solidity", &["sol"], &["//", "/*"]),
+    ("swift", &["swift"], &["//", "/*"]),
+    ("typescript", &["ts", "cts", "mts"], &["//", "/*"]),
+    ("tsx", &["tsx"], &["//", "/*"]),
+    ("yaml", &["yml", "yaml"], &["#"]),
+];
+
+/// Comment markers for a language ast-grep has no built-in entry for here, such as a custom one.
+const ANY_MARKER: &[&str] = &["//", "/*", "#", "--", "<!--"];
+
+/// The canonical name of an ast-grep language as a rule may spell it.
+fn language_name(spelled: &str) -> String {
+    let lower = spelled.to_ascii_lowercase();
+    match lower.as_str() {
+        "js" => "javascript",
+        "ts" => "typescript",
+        "py" => "python",
+        "rs" => "rust",
+        "golang" => "go",
+        "cs" | "c#" => "csharp",
+        "c++" => "cpp",
+        "sh" | "shell" => "bash",
+        "yml" => "yaml",
+        "rb" => "ruby",
+        "kt" => "kotlin",
+        "ex" => "elixir",
+        "hs" => "haskell",
+        "terraform" => "hcl",
+        other => other,
+    }
+    .to_owned()
+}
+
+/// ast-grep ignore comments in the files of every language a project ast-grep rule reads, Rust
+/// aside (the Rust scan reads those), by ast-grep's own file-name rules: its extensions and the
+/// `languageGlobs` of `sgconfig.yml`.
+fn other_language_ignores(
+    root: &Path,
+    scope: &[PathBuf],
+    exclude: &GlobSet,
+    out: &mut Vec<Suppression>,
+) -> Result<(), Error> {
+    let config = root.join("sgconfig.yml");
+    if !config.is_file() {
+        return Ok(());
+    }
+    let mut languages: Vec<String> = crate::defences::ast_grep_rules(root)?
+        .iter()
+        .map(|rule| language_name(&rule.language))
+        .filter(|language| language != "rust")
+        .collect();
+    languages.sort();
+    languages.dedup();
+    if languages.is_empty() {
+        return Ok(());
+    }
+    let globs = crate::defences::language_globs(root)?;
+    let mut matchers: Vec<(GlobSet, &[&str])> = Vec::new();
+    for language in &languages {
+        let known = LANGUAGES.iter().find(|(name, _, _)| name == language);
+        let mut patterns: Vec<String> = known
+            .map(|(_, extensions, _)| extensions.iter().map(|e| format!("*.{e}")).collect())
             .unwrap_or_default();
-        if ids.is_empty() {
-            out.push(("ast-grep::*".to_owned(), line, Route::AstGrepIgnore));
+        for (name, patterns_for) in &globs {
+            if language_name(name) == *language {
+                patterns.extend(patterns_for.iter().cloned());
+            }
         }
-        for id in ids {
-            let id = id.split_whitespace().next().unwrap_or(id);
-            out.push((format!("ast-grep::{id}"), line, Route::AstGrepIgnore));
+        let markers = known.map_or(ANY_MARKER, |(_, _, markers)| *markers);
+        matchers.push((crate::glob_set(&patterns)?, markers));
+    }
+    let markers_for = |rel: &Path| -> Vec<&str> {
+        let name = rel.file_name().unwrap_or_default();
+        let mut markers: Vec<&str> = matchers
+            .iter()
+            .filter(|(set, _)| set.is_match(name))
+            .flat_map(|(_, markers)| markers.iter().copied())
+            .collect();
+        markers.dedup();
+        markers
+    };
+    let files = workspace_files(root, scope, exclude, |rel| {
+        rel.extension().is_none_or(|e| e != "rs") && !markers_for(rel).is_empty()
+    });
+    for rel in files {
+        let bytes = std::fs::read(root.join(&rel)).map_err(|source| Error::Read {
+            path: rel.clone(),
+            source,
+        })?;
+        let text = String::from_utf8_lossy(&bytes);
+        let mut found = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            if let Some(rest) = ignore_directive(line, &markers_for(&rel)) {
+                push_ignore(rest, index + 1, &mut found);
+            }
+        }
+        out.extend(found.into_iter().map(|(rule, line, route)| Suppression {
+            rule,
+            path: rel.clone(),
+            line,
+            route,
+        }));
+    }
+    Ok(())
+}
+
+/// The text after `ast-grep-ignore` when `line` holds a comment, opened by one of `markers` at the
+/// start of the line or after whitespace, whose text begins with the directive.
+fn ignore_directive<'a>(line: &'a str, markers: &[&str]) -> Option<&'a str> {
+    const MARKER: &str = "ast-grep-ignore";
+    for marker in markers {
+        for (at, _) in line.match_indices(marker) {
+            let opens = line
+                .get(..at)
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(char::is_whitespace);
+            let body = line
+                .get(at + marker.len()..)
+                .unwrap_or_default()
+                .trim_start();
+            if opens && let Some(rest) = body.strip_prefix(MARKER) {
+                return Some(
+                    rest.trim_end_matches("-->")
+                        .trim_end_matches("*/")
+                        .trim_end_matches("-}"),
+                );
+            }
         }
     }
+    None
 }
 
 /// Comments in Rust source with their starting line, skipping string and character literals.
