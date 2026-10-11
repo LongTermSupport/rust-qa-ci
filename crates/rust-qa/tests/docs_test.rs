@@ -239,3 +239,31 @@ fn a_fix_paragraph_whose_last_sentence_only_introduces_a_list_drops_that_sentenc
         Some("Fix the script.")
     );
 }
+
+#[test]
+fn compiler_error_codes_resolve_offline_from_rustc_explain() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolver = Resolver::new(dir.path(), Path::new("docs/defences"));
+    let doc = resolver.resolve("E0308").unwrap().unwrap();
+    assert_eq!(doc.source, Source::RustcExplain);
+    assert!(doc.text.contains("E0308") || doc.text.to_lowercase().contains("type"));
+    assert!(resolver.resolve("E9999").unwrap().is_none());
+}
+
+#[test]
+fn ast_greps_unused_suppression_warning_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolver = Resolver::new(dir.path(), Path::new("docs/defences"));
+    let doc = resolver.resolve("unused-suppression").unwrap().unwrap();
+    assert_eq!(doc.source, Source::Bundled);
+}
+
+#[test]
+fn cargo_deny_codes_resolve_to_the_cargo_deny_page_naming_the_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolver = Resolver::new(dir.path(), Path::new("docs/defences"));
+    let doc = resolver.resolve("cargo-deny::unlicensed").unwrap().unwrap();
+    assert_eq!(doc.source, Source::Bundled);
+    assert!(doc.text.contains("`unlicensed`"), "{}", doc.text);
+    assert!(doc.text.contains("# cargo-deny"), "{}", doc.text);
+}

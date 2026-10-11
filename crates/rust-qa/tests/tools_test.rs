@@ -4,8 +4,12 @@
 use std::path::PathBuf;
 
 use rust_qa::config::{Config, MutantsMode};
+use rust_qa::diagnostics::Diagnostic;
 use rust_qa::pipeline::{Phase, Step};
-use rust_qa::tools::{Context, Tool, library_flags, owning_packages, plan, select};
+use rust_qa::tools::{
+    Context, Disposition, Tool, deny_report, diagnostic_text, dylint_disposition, library_flags,
+    owning_packages, plan, select,
+};
 
 #[test]
 fn catalogue_is_ordered_format_then_detectors_then_runners() {
@@ -122,7 +126,9 @@ fn clippy_denies_warnings_across_all_targets() {
     let ctx = context(Config::default());
     assert_eq!(
         line(Tool::Clippy, &ctx),
-        vec!["cargo clippy --workspace --all-targets --all-features -- -D warnings"]
+        vec![
+            "cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings"
+        ]
     );
 }
 
@@ -283,7 +289,9 @@ fn cargo_runs_locked_when_the_workspace_has_a_lock_file() {
     ctx.root = dir.path().to_path_buf();
     assert_eq!(
         line(Tool::Clippy, &ctx),
-        vec!["cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"]
+        vec![
+            "cargo clippy --workspace --all-targets --all-features --locked --message-format=json -- -D warnings"
+        ]
     );
     assert_eq!(
         line(Tool::Dylint, &ctx),
@@ -355,7 +363,7 @@ fn a_further_workspace_is_formatted_linted_and_tested_in_its_own_directory_and_t
         (
             lints.clone(),
             true,
-            "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+            "cargo clippy --workspace --all-targets --all-features --locked --message-format=json -- -D warnings"
                 .to_owned()
         )
     );
@@ -472,4 +480,85 @@ fn stages_are_selected_by_name_and_run_in_their_phase() {
         .unwrap_err()
         .to_string();
     assert!(unknown.contains("tsc"), "{unknown}");
+}
+
+fn diagnostic(code: Option<&str>, level: &str, file: Option<&str>) -> Diagnostic {
+    Diagnostic {
+        code: code.map(ToOwned::to_owned),
+        level: level.to_owned(),
+        rendered: format!("{level}: something\n"),
+        files: file.map(PathBuf::from).into_iter().collect(),
+        message: "something".to_owned(),
+        line: 3,
+        column: 1,
+    }
+}
+
+#[test]
+fn every_compiler_finding_prints_its_identifier_unaltered() {
+    for _ in 0..2 {
+        let text = diagnostic_text(&diagnostic(
+            Some("clippy::len_zero"),
+            "error",
+            Some("src/main.rs"),
+        ));
+        assert!(
+            text.ends_with("  = doc: rust-qa rule-doc clippy::len_zero\n"),
+            "{text}"
+        );
+    }
+    assert!(!diagnostic_text(&diagnostic(None, "error", None)).contains("= doc"));
+}
+
+#[test]
+fn a_dylint_finding_with_no_lint_name_is_its_own_failure() {
+    let lints = vec!["my_lint".to_owned()];
+    let source = Some("src/lib.rs");
+    assert_eq!(
+        dylint_disposition(&diagnostic(Some("my_lint"), "warning", source), &lints),
+        Disposition::Lint("my_lint".to_owned())
+    );
+    assert_eq!(
+        dylint_disposition(&diagnostic(None, "warning", source), &lints),
+        Disposition::Nameless
+    );
+    // The count cargo prints at the end ("1 warning emitted") has no span.
+    assert_eq!(
+        dylint_disposition(&diagnostic(None, "warning", None), &lints),
+        Disposition::Other
+    );
+    assert_eq!(
+        dylint_disposition(&diagnostic(Some("dead_code"), "warning", source), &lints),
+        Disposition::Other
+    );
+    assert_eq!(
+        dylint_disposition(&diagnostic(Some("E0308"), "error", source), &lints),
+        Disposition::Error
+    );
+}
+
+#[test]
+fn cargo_deny_runs_with_json_and_each_code_prints_as_an_identifier_that_resolves() {
+    let ctx = context(Config::default());
+    assert_eq!(
+        line(Tool::Deny, &ctx),
+        vec!["cargo deny --format json --workspace --all-features check"]
+    );
+    let stream = concat!(
+        r#"{"fields":{"code":"unlicensed","graphs":[{"Krate":{"name":"a","version":"0.1.0"}}],"message":"a = 0.1.0 is unlicensed","severity":"error"},"type":"diagnostic"}"#,
+        "\n",
+        r#"{"fields":{"licenses":{"errors":1,"helps":0,"notes":0,"warnings":0}},"type":"summary"}"#,
+        "\nnot json\n"
+    );
+    let report = deny_report(stream).join("\n");
+    assert!(
+        report.contains("error[cargo-deny::unlicensed]: a = 0.1.0 is unlicensed"),
+        "{report}"
+    );
+    assert!(report.contains("= crate: a 0.1.0"), "{report}");
+    assert!(
+        report.contains("= doc: rust-qa rule-doc cargo-deny::unlicensed"),
+        "{report}"
+    );
+    assert!(report.contains("not json"), "{report}");
 }

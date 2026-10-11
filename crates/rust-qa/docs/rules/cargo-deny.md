@@ -3,8 +3,9 @@
 ## What it flags
 
 `cargo deny check` failures per `deny.toml`: security advisories, disallowed licences, banned or
-duplicate crates, and dependencies from unapproved sources. cargo-deny prints its own codes (for
-example `vulnerability`, `rejected`, `banned`).
+duplicate crates, and dependencies from unapproved sources. The gate prints each finding under
+cargo-deny's own code as `cargo-deny::<code>` (for example `cargo-deny::vulnerability`,
+`cargo-deny::rejected`, `cargo-deny::banned`), which `rust-qa rule-doc` resolves to this page.
 
 ## Why
 

@@ -15,22 +15,22 @@ submit for inclusion is licensed under the same terms.
 all static findings; any format or detector failure stops the run before the first runner. Within a
 phase the built-in tools run first, then the project's own stages (see "Project stages").
 
-| Phase     | Tool (`-t` name) | What                                                                                                                                                                                                                                                           |
-| --------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| format    | `fmt`            | `cargo fmt` (fixes locally; `--no-fix` checks)                                                                                                                                                                                                                 |
-| detectors | `record`         | project record validation and anti-bloat policy (`rqaci.record.invalid`, `.budget`, `.ratchet`, `.expired`)                                                                                                                                                    |
-|           | `suppression`    | unrecorded suppressions and `allow` attributes (`rqaci.suppression.unrecorded`, `rqaci.suppression.allow`, `rqaci.record.stale`)                                                                                                                               |
-|           | `summary`        | agent summary freshness (`rqaci.summary.stale`)                                                                                                                                                                                                                |
-|           | `docs`           | every listed identifier resolves to documentation (`rqaci.docs.dangling`), and every page in `docs_dir` documents a listed identifier (`rqaci.docs.orphan`)                                                                                                    |
-|           | `ast-grep`       | supplementary syntactic rules: the project's `sgconfig.yml` rules, then the bundled `rqaci.ast.*` pack, with the record applied; every project rule has test cases (`rqaci.rules.untested`), run by `ast-grep test` when `sgconfig.yml` declares `testConfigs` |
-|           | `clippy`         | Clippy with `-D warnings` and the Cargo `[lints]` tables                                                                                                                                                                                                       |
-|           | `dylint`         | type-aware rule libraries from `[workspace.metadata.dylint]`; every finding of one of their lints blocks, at any level, unless the record covers it                                                                                                            |
-| runners   | `deny`           | cargo-deny (advisories, bans, licences, sources)                                                                                                                                                                                                               |
-|           | `audit`          | cargo-audit (off by default)                                                                                                                                                                                                                                   |
-|           | `machete`        | unused dependencies                                                                                                                                                                                                                                            |
-|           | `test`           | cargo-nextest, then doctests                                                                                                                                                                                                                                   |
-|           | `coverage`       | cargo-llvm-cov with a line threshold                                                                                                                                                                                                                           |
-|           | `mutants`        | cargo-mutants (`off`, `diff` against a base, or `full`)                                                                                                                                                                                                        |
+| Phase     | Tool (`-t` name) | What                                                                                                                                                                                                                                                                                               |
+| --------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| format    | `fmt`            | `cargo fmt` (fixes locally; `--no-fix` checks)                                                                                                                                                                                                                                                     |
+| detectors | `record`         | project record validation and anti-bloat policy (`rqaci.record.invalid`, `.budget`, `.ratchet`, `.expired`)                                                                                                                                                                                        |
+|           | `suppression`    | unrecorded suppressions and `allow` attributes (`rqaci.suppression.unrecorded`, `rqaci.suppression.allow`, `rqaci.record.stale`)                                                                                                                                                                   |
+|           | `summary`        | agent summary freshness (`rqaci.summary.stale`)                                                                                                                                                                                                                                                    |
+|           | `docs`           | every listed identifier resolves to documentation (`rqaci.docs.dangling`), and every page in `docs_dir` documents a listed identifier (`rqaci.docs.orphan`)                                                                                                                                        |
+|           | `ast-grep`       | supplementary syntactic rules: the project's `sgconfig.yml` rules, then the bundled `rqaci.ast.*` pack, with the record applied; every project rule has an `id` (`rqaci.rules.unnamed`) and test cases (`rqaci.rules.untested`), run by `ast-grep test` when `sgconfig.yml` declares `testConfigs` |
+|           | `clippy`         | Clippy with `-D warnings` and the Cargo `[lints]` tables; every finding prints its lint name                                                                                                                                                                                                       |
+|           | `dylint`         | type-aware rule libraries from `[workspace.metadata.dylint]`; every finding of one of their lints blocks, at any level, unless the record covers it; a finding with no lint name fails (`rqaci.dylint.nameless`)                                                                                   |
+| runners   | `deny`           | cargo-deny (advisories, bans, licences, sources); each finding prints as `cargo-deny::<code>`                                                                                                                                                                                                      |
+|           | `audit`          | cargo-audit (off by default)                                                                                                                                                                                                                                                                       |
+|           | `machete`        | unused dependencies                                                                                                                                                                                                                                                                                |
+|           | `test`           | cargo-nextest, then doctests                                                                                                                                                                                                                                                                       |
+|           | `coverage`       | cargo-llvm-cov with a line threshold                                                                                                                                                                                                                                                               |
+|           | `mutants`        | cargo-mutants (`off`, `diff` against a base, or `full`)                                                                                                                                                                                                                                            |
 
 Options: `-t <tool or stage>` (repeatable), `-p <path>` (repeatable; one file is enough; per-crate
 engines analyse the owning crate and print only diagnostics inside the path), `--ci` (also implied
@@ -137,7 +137,16 @@ With `output = "status"` the exit code decides. With `output = "findings"` the c
 list on stdout and exits 0 or 1:
 
 ```json
-[{"file": "src/a.ts", "line": 4, "column": 2, "rule": "MY-RULE", "message": "what is wrong", "note": "how to fix it"}]
+[
+  {
+    "file": "src/a.ts",
+    "line": 4,
+    "column": 2,
+    "rule": "MY-RULE",
+    "message": "what is wrong",
+    "note": "how to fix it"
+  }
+]
 ```
 
 (`file` relative to `dir`, or to the root; `column` and `note` optional). `rust-qa` applies the

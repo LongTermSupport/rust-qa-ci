@@ -262,3 +262,25 @@ fn a_rule_message_is_listed_without_its_own_identifier_or_page() {
         "a thing (in brackets) is wrong"
     );
 }
+
+#[test]
+fn project_ast_grep_rules_without_an_id_are_named_by_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("rules")).unwrap();
+    std::fs::write(root.join("sgconfig.yml"), "ruleDirs: [rules]\n").unwrap();
+    std::fs::write(
+        root.join("rules/noid.yml"),
+        "language: rust\nseverity: error\nmessage: m\nrule:\n  pattern: x\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("rules/ok.yml"),
+        "id: ok\nlanguage: rust\nseverity: error\nmessage: m\nrule:\n  pattern: x\n",
+    )
+    .unwrap();
+    assert_eq!(
+        rust_qa::defences::unnamed_ast_grep_rules(root).unwrap(),
+        vec![std::path::PathBuf::from("rules/noid.yml")]
+    );
+}

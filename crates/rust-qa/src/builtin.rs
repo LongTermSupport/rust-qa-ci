@@ -26,9 +26,13 @@ pub const DOCS_DANGLING: &str = "rqaci.docs.dangling";
 pub const DOCS_ORPHAN: &str = "rqaci.docs.orphan";
 /// A project ast-grep rule has no test case with both valid and invalid code.
 pub const RULES_UNTESTED: &str = "rqaci.rules.untested";
+/// A project ast-grep rule has no `id`.
+pub const RULES_UNNAMED: &str = "rqaci.rules.unnamed";
+/// A dylint library reported a finding through no declared lint.
+pub const DYLINT_NAMELESS: &str = "rqaci.dylint.nameless";
 
 /// Every built-in identifier, for listing and documentation checks.
-pub const ALL: [&str; 11] = [
+pub const ALL: [&str; 13] = [
     RECORD_INVALID,
     RECORD_STALE,
     RECORD_BUDGET,
@@ -40,6 +44,8 @@ pub const ALL: [&str; 11] = [
     DOCS_DANGLING,
     DOCS_ORPHAN,
     RULES_UNTESTED,
+    RULES_UNNAMED,
+    DYLINT_NAMELESS,
 ];
 
 /// One line saying what a built-in identifier guards, for the listing and the agent summary.
@@ -57,6 +63,8 @@ pub fn describe(id: &str) -> &'static str {
         DOCS_DANGLING => "every listed identifier resolves to documentation",
         DOCS_ORPHAN => "every documentation page belongs to a listed identifier",
         RULES_UNTESTED => "every project ast-grep rule has valid and invalid test cases",
+        RULES_UNNAMED => "every project ast-grep rule has an `id`",
+        DYLINT_NAMELESS => "every dylint library finding is reported through a declared lint",
         _ => "",
     }
 }

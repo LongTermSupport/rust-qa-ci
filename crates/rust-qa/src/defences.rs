@@ -456,6 +456,35 @@ pub fn dylint_lints(root: &Path) -> Result<Vec<DylintLint>, Error> {
 /// # Errors
 /// Returns an error when a YAML file cannot be read or parsed.
 pub fn ast_grep_rules(root: &Path) -> Result<Vec<AstGrepRule>, Error> {
+    let mut rules = Vec::new();
+    for file in rule_files(root)? {
+        for doc in load_yaml(&root.join(&file))? {
+            if let Some(id) = field(&doc, "id").and_then(Yaml::as_str) {
+                rules.push(AstGrepRule {
+                    id: id.to_owned(),
+                    severity: field(&doc, "severity")
+                        .and_then(Yaml::as_str)
+                        .unwrap_or("hint")
+                        .to_owned(),
+                    file: file.clone(),
+                    language: field(&doc, "language")
+                        .and_then(Yaml::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    message: field(&doc, "message")
+                        .and_then(Yaml::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_owned(),
+                });
+            }
+        }
+    }
+    Ok(rules)
+}
+
+/// The YAML files in the `ruleDirs` of `sgconfig.yml`, in order.
+fn rule_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
     let config_path = root.join("sgconfig.yml");
     let docs = load_yaml(&config_path)?;
     let dirs: Vec<PathBuf> = docs
@@ -469,37 +498,33 @@ pub fn ast_grep_rules(root: &Path) -> Result<Vec<AstGrepRule>, Error> {
                 .collect()
         })
         .unwrap_or_default();
-    let mut rules = Vec::new();
     let none = crate::glob_set::<&str>(&[])?;
-    for dir in dirs {
-        let files = workspace_files(root, std::slice::from_ref(&dir), &none, |p| {
-            p.extension().is_some_and(|e| e == "yml" || e == "yaml")
-        });
-        for file in files {
-            for doc in load_yaml(&root.join(&file))? {
-                if let Some(id) = field(&doc, "id").and_then(Yaml::as_str) {
-                    rules.push(AstGrepRule {
-                        id: id.to_owned(),
-                        severity: field(&doc, "severity")
-                            .and_then(Yaml::as_str)
-                            .unwrap_or("hint")
-                            .to_owned(),
-                        file: file.clone(),
-                        language: field(&doc, "language")
-                            .and_then(Yaml::as_str)
-                            .unwrap_or("")
-                            .to_owned(),
-                        message: field(&doc, "message")
-                            .and_then(Yaml::as_str)
-                            .unwrap_or("")
-                            .trim()
-                            .to_owned(),
-                    });
-                }
-            }
+    Ok(dirs
+        .iter()
+        .flat_map(|dir| {
+            workspace_files(root, std::slice::from_ref(dir), &none, |p| {
+                p.extension().is_some_and(|e| e == "yml" || e == "yaml")
+            })
+        })
+        .collect())
+}
+
+/// Rule files in the `ruleDirs` of `sgconfig.yml` holding a rule with no `id`: ast-grep runs
+/// one under its file name, which no listing, page or test can name.
+///
+/// # Errors
+/// Returns an error when a YAML file cannot be read or parsed.
+pub fn unnamed_ast_grep_rules(root: &Path) -> Result<Vec<PathBuf>, Error> {
+    let mut unnamed = Vec::new();
+    for file in rule_files(root)? {
+        if load_yaml(&root.join(&file))?
+            .iter()
+            .any(|doc| doc.as_hash().is_some() && field(doc, "id").is_none())
+        {
+            unnamed.push(file);
         }
     }
-    Ok(rules)
+    Ok(unnamed)
 }
 
 /// The file-name globs `languageGlobs` in `sgconfig.yml` adds to each language, as spelled there.
