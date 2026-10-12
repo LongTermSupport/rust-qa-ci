@@ -5,7 +5,10 @@ use std::path::Path;
 
 use rust_qa::Error;
 use rust_qa::config::Config;
-use rust_qa::defences::{DylintLint, Engine, ast_grep_rules, enumerate, parse_dylint_list};
+use rust_qa::defences::{
+    DylintLint, DylintListing, Engine, ast_grep_rules, dylint_lints_from, enumerate,
+    parse_dylint_list,
+};
 
 fn write(root: &Path, rel: &str, text: &str) {
     let path = root.join(rel);
@@ -180,6 +183,94 @@ fn ast_grep_rules_are_read_from_rule_dirs() {
         .map(|r| (r.id.as_str(), r.severity.as_str()))
         .collect();
     assert_eq!(ids, vec![("no-println", "error"), ("prefer-x", "hint")]);
+}
+
+fn listing(success: bool, stdout: &str, stderr: &str) -> DylintListing {
+    DylintListing {
+        success,
+        stdout: stdout.to_owned(),
+        stderr: stderr.to_owned(),
+    }
+}
+
+const TWO_LIBRARIES: &str = "lib_one (target/release)\n    rule_a    deny    first\n\nlib_two (target/release)\n    rule_b    warn    second\n";
+
+/// Lists from `offline` and then `online`, recording which were asked for.
+fn listed(
+    configured: usize,
+    offline: &DylintListing,
+    online: &DylintListing,
+) -> (Result<Vec<DylintLint>, Error>, Vec<bool>) {
+    let asked = std::cell::RefCell::new(Vec::new());
+    let result = dylint_lints_from(configured, |is_offline| {
+        asked.borrow_mut().push(is_offline);
+        Ok(if is_offline {
+            offline.clone()
+        } else {
+            online.clone()
+        })
+    });
+    (result, asked.into_inner())
+}
+
+#[test]
+fn a_complete_offline_listing_is_used_without_the_network() {
+    let (result, asked) = listed(
+        2,
+        &listing(true, TWO_LIBRARIES, ""),
+        &listing(false, "", "not wanted"),
+    );
+    assert_eq!(result.unwrap().len(), 2);
+    assert_eq!(asked, vec![true]);
+}
+
+#[test]
+fn an_offline_listing_that_found_no_libraries_is_retried_online() {
+    let (result, asked) = listed(
+        2,
+        &listing(true, "", "Warning: No libraries were found.\n"),
+        &listing(true, TWO_LIBRARIES, ""),
+    );
+    assert_eq!(result.unwrap().len(), 2);
+    assert_eq!(asked, vec![true, false]);
+}
+
+#[test]
+fn an_offline_listing_missing_a_configured_library_is_retried_online() {
+    let (result, asked) = listed(
+        2,
+        &listing(
+            true,
+            "lib_one (target/release)\n    rule_a    deny    first\n",
+            "",
+        ),
+        &listing(true, TWO_LIBRARIES, ""),
+    );
+    assert_eq!(result.unwrap().len(), 2);
+    assert_eq!(asked, vec![true, false]);
+}
+
+#[test]
+fn a_failed_offline_listing_is_retried_online() {
+    let (result, asked) = listed(
+        2,
+        &listing(false, "", "offline"),
+        &listing(true, TWO_LIBRARIES, ""),
+    );
+    assert_eq!(result.unwrap().len(), 2);
+    assert_eq!(asked, vec![true, false]);
+}
+
+#[test]
+fn libraries_that_list_no_lints_even_online_are_an_error_not_an_empty_list() {
+    let (result, _) = listed(
+        2,
+        &listing(true, "", "Warning: No libraries were found.\n"),
+        &listing(true, "", "Warning: No libraries were found.\n"),
+    );
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("cargo dylint list --all"), "{message}");
+    assert!(message.contains("No libraries were found"), "{message}");
 }
 
 #[test]

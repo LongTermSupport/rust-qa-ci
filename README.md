@@ -56,8 +56,9 @@ Other commands, none of which run a defence:
 
 - `rust-qa rules [--json]`: every active defence, derived from configuration, plus the project record; each
   with a one-line description (for a `[lints]` entry, from the toolchain's own `-W help`). The
-  dylint libraries are listed offline when they have been fetched before; a git library not yet
-  fetched needs the network once
+  dylint libraries are listed offline when they have been fetched before; a library, or a
+  dependency of one, not yet fetched needs the network once. A listing that names no lints from
+  some configured library is retried online, and fails the run if it still names none
 - `rust-qa rule-doc <id>`: documentation for any printed identifier, offline
 - `rust-qa docs-check`: fail if a listed identifier has no documentation
 - `rust-qa record check|list`: validate (structure and policy) or list project-record exceptions,
@@ -347,8 +348,8 @@ A tool whose own configuration is absent (no dylint metadata, no `deny.toml`; fo
 Pin an exact tag. Install the binary and the pinned external tools:
 
 ```bash
-cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.4.1 rust-qa
-git clone --depth 1 --branch v0.4.1 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
+cargo install --locked --git https://github.com/LongTermSupport/rust-qa-ci --tag v0.4.2 rust-qa
+git clone --depth 1 --branch v0.4.2 https://github.com/LongTermSupport/rust-qa-ci /tmp/rust-qa-ci
 /tmp/rust-qa-ci/scripts/install-tools.sh            # versions from tools.lock
 ```
 
@@ -357,7 +358,7 @@ Bundled type-aware rules load from the same tag:
 ```toml
 [workspace.metadata.dylint]
 libraries = [
-    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.4.1", pattern = "lints/rqaci_lints" },
+    { git = "https://github.com/LongTermSupport/rust-qa-ci", tag = "v0.4.2", pattern = "lints/rqaci_lints" },
 ]
 ```
 

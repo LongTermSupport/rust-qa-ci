@@ -511,39 +511,93 @@ pub fn parse_dylint_list(output: &str) -> Vec<DylintLint> {
     lints
 }
 
+/// The command that lists the configured dylint libraries' lints.
+const DYLINT_LIST: &str = "cargo dylint list --all";
+
+/// One run of `cargo dylint list --all`: whether it exited successfully, and what it printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DylintListing {
+    /// Whether the command exited successfully.
+    pub success: bool,
+    /// What it printed on stdout: the libraries and their lints.
+    pub stdout: String,
+    /// What it printed on stderr.
+    pub stderr: String,
+}
+
 /// Lints of every library in `[workspace.metadata.dylint]`, via `cargo dylint list --all` (builds
 /// the libraries when needed; does not lint the workspace).
 ///
 /// # Errors
 /// Returns an error when cargo-dylint is missing or fails.
 pub fn dylint_lints(root: &Path) -> Result<Vec<DylintLint>, Error> {
-    let command = "cargo dylint list --all";
-    let list = |offline: bool| {
+    let configured = crate::manifest::dylint_libraries(root)?.len();
+    dylint_lints_from(configured, |offline| {
         let mut cmd = Command::new("cargo");
         cmd.args(["dylint", "list", "--all"]).current_dir(root);
         if offline {
             cmd.env("CARGO_NET_OFFLINE", "true");
         }
-        cmd.output().map_err(|e| Error::Command {
-            command: command.to_owned(),
+        let output = cmd.output().map_err(|e| Error::Command {
+            command: DYLINT_LIST.to_owned(),
             message: e.to_string(),
+        })?;
+        Ok(DylintListing {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
-    };
+    })
+}
+
+/// Whether a listing names lints from at least `configured` libraries. cargo-dylint exits 0 when
+/// it finds no library at all, as it does offline before the libraries are fetched, so success
+/// alone does not mean the libraries were listed.
+fn lists_every_library(listing: &DylintListing, configured: usize) -> bool {
+    let lints = parse_dylint_list(&listing.stdout);
+    let mut libraries: Vec<&str> = lints.iter().map(|l| l.library.as_str()).collect();
+    libraries.sort_unstable();
+    libraries.dedup();
+    listing.success
+        && !listing.stderr.contains("No libraries were found")
+        && libraries.len() >= configured.max(1)
+}
+
+/// The lints of `configured` libraries, from `list`, which runs `cargo dylint list --all`
+/// offline when given `true` and online otherwise.
+///
+/// # Errors
+/// Returns an error when the listing fails, or still names no lints from some configured
+/// library once run online.
+pub fn dylint_lints_from(
+    configured: usize,
+    list: impl Fn(bool) -> Result<DylintListing, Error>,
+) -> Result<Vec<DylintLint>, Error> {
     // Offline first, so that a library already fetched lists with no network; a library not yet
-    // fetched needs the network once.
+    // fetched, or whose dependencies are not, needs the network once.
     let offline = list(true)?;
-    let output = if offline.status.success() {
+    let output = if lists_every_library(&offline, configured) {
         offline
     } else {
         list(false)?
     };
-    if !output.status.success() {
+    if !output.success {
         return Err(Error::Command {
-            command: command.to_owned(),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            command: DYLINT_LIST.to_owned(),
+            message: output.stderr.trim().to_owned(),
         });
     }
-    Ok(parse_dylint_list(&String::from_utf8_lossy(&output.stdout)))
+    if !lists_every_library(&output, configured) {
+        return Err(Error::Command {
+            command: DYLINT_LIST.to_owned(),
+            message: format!(
+                "listed no lints from {configured} configured dylint librar{}, so none of their lints could be checked: {}",
+                if configured == 1 { "y" } else { "ies" },
+                output.stderr.trim()
+            ),
+        });
+    }
+    Ok(parse_dylint_list(&output.stdout))
 }
 
 /// Rules found in the `ruleDirs` of `sgconfig.yml`, in file order.
