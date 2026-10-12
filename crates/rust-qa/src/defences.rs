@@ -550,20 +550,33 @@ pub fn dylint_lints(root: &Path) -> Result<Vec<DylintLint>, Error> {
     })
 }
 
+/// Whether a listing names lints from at least `configured` libraries. cargo-dylint exits 0 when
+/// it finds no library at all, as it does offline before the libraries are fetched, so success
+/// alone does not mean the libraries were listed.
+fn lists_every_library(listing: &DylintListing, configured: usize) -> bool {
+    let lints = parse_dylint_list(&listing.stdout);
+    let mut libraries: Vec<&str> = lints.iter().map(|l| l.library.as_str()).collect();
+    libraries.sort_unstable();
+    libraries.dedup();
+    listing.success
+        && !listing.stderr.contains("No libraries were found")
+        && libraries.len() >= configured.max(1)
+}
+
 /// The lints of `configured` libraries, from `list`, which runs `cargo dylint list --all`
 /// offline when given `true` and online otherwise.
 ///
 /// # Errors
-/// Returns an error when the listing fails.
+/// Returns an error when the listing fails, or still names no lints from some configured
+/// library once run online.
 pub fn dylint_lints_from(
     configured: usize,
     list: impl Fn(bool) -> Result<DylintListing, Error>,
 ) -> Result<Vec<DylintLint>, Error> {
-    let _ = configured;
     // Offline first, so that a library already fetched lists with no network; a library not yet
-    // fetched needs the network once.
+    // fetched, or whose dependencies are not, needs the network once.
     let offline = list(true)?;
-    let output = if offline.success {
+    let output = if lists_every_library(&offline, configured) {
         offline
     } else {
         list(false)?
@@ -572,6 +585,16 @@ pub fn dylint_lints_from(
         return Err(Error::Command {
             command: DYLINT_LIST.to_owned(),
             message: output.stderr.trim().to_owned(),
+        });
+    }
+    if !lists_every_library(&output, configured) {
+        return Err(Error::Command {
+            command: DYLINT_LIST.to_owned(),
+            message: format!(
+                "listed no lints from {configured} configured dylint librar{}, so none of their lints could be checked: {}",
+                if configured == 1 { "y" } else { "ies" },
+                output.stderr.trim()
+            ),
         });
     }
     Ok(parse_dylint_list(&output.stdout))

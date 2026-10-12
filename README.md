@@ -56,8 +56,9 @@ Other commands, none of which run a defence:
 
 - `rust-qa rules [--json]`: every active defence, derived from configuration, plus the project record; each
   with a one-line description (for a `[lints]` entry, from the toolchain's own `-W help`). The
-  dylint libraries are listed offline when they have been fetched before; a git library not yet
-  fetched needs the network once
+  dylint libraries are listed offline when they have been fetched before; a library, or a
+  dependency of one, not yet fetched needs the network once. A listing that names no lints from
+  some configured library is retried online, and fails the run if it still names none
 - `rust-qa rule-doc <id>`: documentation for any printed identifier, offline
 - `rust-qa docs-check`: fail if a listed identifier has no documentation
 - `rust-qa record check|list`: validate (structure and policy) or list project-record exceptions,
