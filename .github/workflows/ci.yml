@@ -1,8 +1,21 @@
 name: CI
 
+# A push that changes only documentation starts no run; pull requests are never filtered.
+# crates/ and lints/ stay in whole: the rule pages under crates/rust-qa/docs/ are compiled into
+# the binary.
 on:
   push:
     branches: [main]
+    paths:
+      - "**"
+      - "!**.md"
+      - "!docs/**"
+      - "crates/**"
+      - "lints/**"
+      - "**/CLAUDE.md"
+      - "**/AGENTS.md"
+      - ".claude/**"
+      - ".github/**"
   pull_request:
 
 permissions:
@@ -78,3 +91,17 @@ jobs:
           echo "${PWD}" >> "${GITHUB_PATH}"
       - run: actionlint
       - run: shellcheck scripts/*.sh .githooks/* .github/scripts/*.sh
+
+  # The workflow lint (LongTermSupport/actions-qa-ci), on pull requests.
+  actions-qa-ci:
+    name: actions-qa-ci
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: LongTermSupport/actions-qa-ci@2784a484769348f14ed780db9b45cd3a402bf31e # v0.1.0
