@@ -60,7 +60,9 @@ ensure_binstall() {
     local url="https://github.com/cargo-bins/cargo-binstall/releases/download/v${version}/cargo-binstall-x86_64-unknown-linux-musl.tgz"
     curl --proto '=https' --tlsv1.2 -sSfL -o "${work}/binstall.tgz" "${url}"
     tar -xzf "${work}/binstall.tgz" -C "${work}"
-    "${work}/cargo-binstall" --no-confirm "cargo-binstall@${version}"
+    # Same strategy as [prebuilt]: never QuickInstall, and a source fallback (taken when the
+    # release lookup times out) builds from the crate's own lockfile.
+    "${work}/cargo-binstall" --no-confirm --locked --disable-strategies quick-install "cargo-binstall@${version}"
 }
 
 missing=0
