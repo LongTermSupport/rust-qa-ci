@@ -1,0 +1,10 @@
+version: 1
+
+exceptions:
+  # The secret and denylist scans exist to catch a leak in exactly the text a docs-only push
+  # publishes, and this repository is public, so they run on every push.
+  - id: actionsqaci.docsOnlyPush
+    path: .github/workflows/public-safety.yml
+    hazard: "A documentation push that leaks a secret or a private term would be published without the scan that exists to catch it"
+    scope: "Only the public-safety workflow, whose gitleaks and denylist jobs take under a minute per push"
+    decision: https://github.com/LongTermSupport/rust-qa-ci/blob/main/.github/workflows/public-safety.yml
